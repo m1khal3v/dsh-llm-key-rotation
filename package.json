@@ -1,6 +1,6 @@
 {
   "name": "@m1khal3v/dsh-llm-key-rotation",
-  "version": "0.6.2",
+  "version": "1.0.0",
   "description": "Seamless API-key rotation for DeepSeek Harness LLM providers when subscription limits are hit",
   "license": "MIT",
   "author": "m1khal3v",
