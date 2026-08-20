@@ -3,39 +3,35 @@
  *
  * Mounts a listener on the agent loop's `agent/request-error` recovery
  * waterfall. When a model request for a configured provider fails with one of
- * the profile's trigger codes (typically an exhausted subscription quota or an
- * auth failure), the plugin writes an *additional* pool key's value to the
- * credential reference the adapter reads and returns `{ kind: 'retry' }`, so
- * the loop opens a fresh turn that authenticates with the rotated key — no
- * restart, no model-visible surface. Adapters resolve the credential reference
- * once per request, which is what makes the rotation reach the very next
- * request.
+ * the profile's `rotate_on` trigger codes (typically an exhausted subscription
+ * quota or an auth failure), the plugin writes the next key from the provider's
+ * key chain into the credential reference the adapter reads and returns
+ * `{ kind: 'retry' }`, so the loop opens a fresh turn that authenticates with
+ * the rotated key — no restart, no model-visible surface. Adapters resolve the
+ * credential reference once per request, which is what makes the rotation reach
+ * the very next request.
  *
- * The plugin manages only **additional keys on top of one primary key**. The
- * primary key lives in the provider's `apiKeyEnv` reference (`targetRef` here)
- * and is configured through the harness main settings (Models page), never through
- * this plugin. `poolRefs` lists the additional references only; entries equal to
- * `targetRef` are ignored, so a legacy profile whose pool head duplicated the
- * primary degrades gracefully to extras-only. On a qualifying failure the plugin
- * writes each extra key's value into `targetRef` in order; once every extra has
- * been tried it delegates to downstream recovery. There is no `cycle` mode: an
- * incident never rotates indefinitely. After a successful model step the plugin
- * restores the primary key to `targetRef`, so the next incident begins from the
- * primary again.
+ * Configuration carries only provider flags and credential *references* — never
+ * key values. Each profile is `{ enabled, rotate_on, apiKeyEnvChain }` keyed by
+ * provider route id. The active key lives in the provider's environment
+ * reference (`envRefOf(provider)`, e.g. `OPENCODE_GO_API_KEY`). The spare keys
+ * live one per reference listed in `apiKeyEnvChain` (e.g. `OPENCODE_GO_API_KEY_CHAIN_1`,
+ * `OPENCODE_GO_API_KEY_CHAIN_2`, …), with values stored through the credential
+ * store (the web card writes them there) and read at rotation time.
  *
- * Configuration carries only credential *references* (environment-variable
- * names), never values: `targetRef` is the reference the adapter resolves, and
- * `poolRefs` is the additional chain. Values live in the credential store
- * (`ctx.credentials`), written through the web UI or the credentials API. The
- * plugin reads the `llm-key-rotation:` settings section (mounted on
- * `ctx.settings`) over its composition entry, so a changed profile takes effect
- * on the next failure without a restart.
- *
- * Pool values are cached at load and refreshed on settings change or
- * `credentials/updated` for a pool ref. The cache preserves the original key
- * values even after `targetRef` is overwritten by a rotation, so a return to a
- * previously-used pool entry (and the primary-key restore) writes the original
- * value rather than the one that replaced it.
+ * Walk discipline (no unbounded spinning), keyed to the last write timestamp:
+ *   - The latest spare-key write carries a timestamp. A failing request that
+ *     arrives within 300 s of it advances to the NEXT chain entry (a live series
+ *     of failures walks the chain forward).
+ *   - A failing request that arrives 300 s or more after the last write starts
+ *     again from chain head (index 0) — the previously-last key may have become
+ *     stale, so retry the spares from the beginning.
+ *   - If no `apiKeyEnvChain` key is stored (or the provider is disabled), the
+ *     plugin hands the failure to downstream recovery immediately. Once every
+ *     chain key has been written within one 300 s window and a failure still
+ *     arrives, the plugin delegates rather than spinning forever.
+ * `envRef` is never restored after success: it keeps the last written (working or
+ * last-tried) key.
  *
  * The listener registers after `dsh-llm-retry` in the waterfall (this bundle is
  * applied after `@deepseek-ai/dsh-base`), so for trigger codes that
@@ -45,7 +41,7 @@
  * exhausts its retry budget; to rotate on `RATE_LIMIT` immediately, remove
  * `RATE_LIMIT` from the provider profile's `retryPolicy.retryableCodes`.
  *
- * Every rotation, seed decision, cap, and cooldown is logged to stdout through
+ * Every rotation, delegate, and chain reset is logged to stdout through
  * `console.log`/`console.error` with a `[llm-key-rotation]` tag, so operation is
  * confirmable by watching the launching process's terminal. No key values are
  * ever logged. (`ctx.logger` is intentionally not used for these: in the dsh
@@ -74,35 +70,31 @@ export const inject = ['agents', 'credentials']
 const NS = settingsNamespace('llm-key-rotation')
 
 /**
- * Default trigger codes when a profile omits `triggerCodes`. Only codes that
+ * Default rotating codes when a profile omits `rotate_on`. Only codes that
  * dsh-llm-retry does NOT retry by default — QUOTA and AUTH reach this plugin
  * immediately because llm-retry delegates via next(). RATE_LIMIT IS in
  * llm-retry's default retryableCodes, so it is intercepted first; include it
  * only if the provider profile removes RATE_LIMIT from retryPolicy.retryableCodes.
  */
-const DEFAULT_TRIGGER_CODES = Object.freeze(['QUOTA', 'AUTH'])
+const DEFAULT_ROTATE_ON = Object.freeze(['QUOTA', 'AUTH'])
+
+/** How long a spare-key write stays "fresh": failures within this window continue the chain. */
+const CHAIN_WINDOW_MS = 300_000
+
+/** Derive the provider's env (apiKeyEnv) reference from its route id by convention. */
+export function envRefOf(provider: string): string {
+  return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+}
 
 const profileSchema: z<RotationProfile> = z.object({
-  targetRef: z.string().role('credential-ref').required(),
-  poolRefs: z.array(z.string().min(1)).min(1).required(),
-  triggerCodes: z.array(z.string().min(1)).min(1).default([...DEFAULT_TRIGGER_CODES]),
-  /**
-   * Optional hard cap on rotations per incident. Defaults to the number of
-   * additional keys (each extra is tried at most once). A lower value allows
-   * trying fewer keys before delegating.
-   */
-  maxIncidentRotations: z.natural().min(1),
-  /**
-   * Optional cooldown in milliseconds applied once `maxIncidentRotations` is
-   * reached: the plugin stops rotating this provider for the window and
-   * delegates, preventing a rapid refire loop from hammering the keys.
-   */
-  cooldownMs: z.natural().min(0),
+  enabled: z.boolean().default(false),
+  rotate_on: z.array(z.string().min(1)).min(1).default([...DEFAULT_ROTATE_ON]),
+  apiKeyEnvChain: z.array(z.string().role('credential-ref')).default([]),
 })
 
 /** Plugin config, also the `llm-key-rotation` settings-section shape. */
 export interface Config {
-  /** Rotation profiles keyed by provider route id (e.g. `deepseek-official`). */
+  /** Rotation profiles keyed by provider route id (e.g. `opencode-go`). */
   readonly providers: Readonly<Record<string, RotationProfile>>
 }
 
@@ -113,25 +105,20 @@ export const Config: z<Config> = z.object({
 /** Per-provider in-memory rotation state. */
 interface RotationState {
   /**
-   * Index of the last-written additional key, or `-1` while the primary is
-   * active (nothing has been rotated this incident).
+   * Index of the next chain entry to try on a fresh window, or the index already
+   * walked past within the current window (0 = start from head).
    */
-  index: number
-  /** Rotations committed since the last successful assistant message for this provider. */
-  rotatedSinceSuccess: number
-  /** Stable id for the current incident chain; reset on a successful step. */
+  nextIndex: number
+  /** Epoch-ms of the last spare-key write, or `undefined` before any rotation. */
+  lastWriteAt: number | undefined
+  /** Stable id for the current incident chain; refreshed on a fresh window. */
   rotationId: RotationId
-  /** Epoch-ms until which this provider refuses to rotate (0 = no cooldown). */
-  cooldownUntil: number
   /** Serializes advance + credential write + telemetry across concurrent errors for one provider. */
   chain: Promise<RequestErrorAction | undefined>
 }
 
-/** Cached key values for one provider: the primary plus each additional pool key, keyed by pool index. */
-type PoolCache = Map<number, string>
-
-/** Cached primary-key value preserved across rotations (so it can be restored after success). */
-type PrimaryValue = string | undefined
+/** Cached spare-key values for one provider, indexed by position in `apiKeyEnvChain`. */
+const chainCaches = new Map<string, Array<string | undefined>>()
 
 /** The `agent/request-error` payload fields this plugin reads. */
 interface RequestErrorPayload {
@@ -144,11 +131,11 @@ interface RequestErrorPayload {
 }
 
 /**
- * Install key rotation. The plugin owns no config beyond the provider profiles;
- * each profile owns its target (primary) reference and its additional pool.
- * Failures of a rotation are warned and delegated, never fatal — a rotation
- * that cannot write a new key hands the failure to downstream recovery rather
- * than crashing the loop.
+ * Install key rotation. Each provider profile owns its `enabled` flag, `rotate_on`
+ * codes, and `apiKeyEnvChain` reference list; the key values live in the credential
+ * store. Failures of a rotation are logged and delegated, never fatal — a rotation
+ * that cannot write a value hands the failure to downstream recovery rather than
+ * crashing the loop.
  * @param ctx - plugin context carrying the agent registry and credential seam.
  * @param config - composition entry config; the `llm-key-rotation:` settings section overrides it live.
  */
@@ -162,206 +149,119 @@ export function apply(ctx: Context, config: Config): void {
     return hit?.value
   }
 
-  /**
-   * The effective rotation pool for a profile: its `poolRefs` with any entry
-   * equal to `targetRef` removed. The plugin rotates only additional keys; the
-   * primary (`targetRef`) is the baseline the extras replace during an incident.
-   */
-  const extrasOf = (profile: RotationProfile): string[] => profile.poolRefs.filter((ref) => ref !== profile.targetRef)
-
-  /** Per-provider pool-value cache; preserves original extra values across rotations. */
-  const poolCaches = new Map<string, PoolCache>()
-  /** Per-provider cached primary value, preserved so it can be restored after a successful incident. */
-  const primaryValues = new Map<string, PrimaryValue>()
-
-  /** Refresh the cached values for one provider's pool (primary + extras) from the credential store. */
-  const refreshCache = async (provider: string, profile: RotationProfile): Promise<void> => {
-    const cache: PoolCache = new Map()
-    const extras = extrasOf(profile)
-    for (const [index, ref] of extras.entries()) {
-      const value = await resolveRef(credentialRef(ref))
-      if (value !== undefined) cache.set(index, value)
+  /** Refresh the cached spare-key values for one provider from its `apiKeyEnvChain` refs. */
+  const refreshChain = async (provider: string, profile: RotationProfile): Promise<void> => {
+    const values: Array<string | undefined> = []
+    for (const ref of profile.apiKeyEnvChain) {
+      values.push(await resolveRef(credentialRef(ref)))
     }
-    poolCaches.set(provider, cache)
-    const primary = await resolveRef(credentialRef(profile.targetRef))
-    primaryValues.set(provider, primary)
-    if (primary === undefined) {
-      console.error(
-        '[llm-key-rotation] provider "%s" primary key "%s" is not configured; '
-          + 'configure it in the main settings (Models) before adding additional keys',
-        provider, profile.targetRef,
-      )
-    }
+    chainCaches.set(provider, values)
   }
 
-  /** Refresh caches for all configured providers. */
-  const refreshAllCaches = async (): Promise<void> => {
+  /** Refresh chain caches for all providers. */
+  const refreshAllChains = async (): Promise<void> => {
     for (const [provider, profile] of Object.entries(profiles())) {
-      await refreshCache(provider, profile)
+      await refreshChain(provider, profile)
     }
   }
 
-  void refreshAllCaches()
-
-  /**
-   * Reset this provider's incident state synchronously (so a concurrent failure
-   * sees a fresh incident) and, in the background, restore the primary key to
-   * `targetRef` if the incident had rotated away from it.
-   */
-  const restorePrimary = (provider: string, profile: RotationProfile): void => {
-    const state = getState(provider)
-    const wasRotated = state.rotatedSinceSuccess > 0
-    const primary = primaryValues.get(provider)
-    state.index = -1
-    state.rotatedSinceSuccess = 0
-    state.cooldownUntil = 0
-    state.rotationId = RotationId(randomUUID())
-    if (!wasRotated || primary === undefined) return
-    void (async () => {
-      try {
-        await ctx.credentials.set(credentialRef(profile.targetRef), primary)
-        console.log(
-          '[llm-key-rotation] restored primary "%s" for provider "%s"; index→0',
-          profile.targetRef, provider,
-        )
-      } catch (error: unknown) {
-        console.error(
-          '[llm-key-rotation] could not restore primary "%s" for provider "%s"',
-          profile.targetRef, provider,
-        )
-        console.error(error)
-      }
-    })()
-  }
+  void refreshAllChains()
 
   const states = new Map<string, RotationState>()
 
   const getState = (provider: string): RotationState => {
     let state = states.get(provider)
     if (state === undefined) {
-      state = { index: -1, rotatedSinceSuccess: 0, rotationId: RotationId(randomUUID()), cooldownUntil: 0, chain: Promise.resolve(undefined) }
+      state = { nextIndex: 0, lastWriteAt: undefined, rotationId: RotationId(randomUUID()), chain: Promise.resolve(undefined) }
       states.set(provider, state)
     }
     return state
   }
 
-  // Reset the incident chain (and restore the primary) on a completed assistant
-  // message for this provider: the active key worked, so the next qualifying
-  // failure starts a fresh incident from the primary. `session/event` is a
-  // global observer feed.
-  ctx.on('session/event', (_session, event) => {
-    if (event.type !== 'assistant/message') return
-    const source = event.data.message.source
-    if (source.kind !== 'model') return
-    const provider = source.provider
-    const profile = profiles()[provider]
-    if (profile === undefined) return
-    const state = states.get(provider)
-    if (state === undefined) return
-    restorePrimary(provider, profile)
-  })
-
-  // Refresh the cache when a pool ref's stored value changes (web UI write,
-  // external edit, or programmatic set), so a newly-stored pool key is picked
-  // up without a restart.
+  // Refresh a changed chain cache when any of a provider's chain refs changes,
+  // so a newly-stored spare key is picked up without a restart.
   ctx.on('credentials/updated', (ref: CredentialRef) => {
     const refStr = String(ref)
     for (const [provider, profile] of Object.entries(profiles())) {
-      if (profile.poolRefs.includes(refStr) || profile.targetRef === refStr) {
-        void refreshCache(provider, profile)
-      }
+      if (profile.apiKeyEnvChain.includes(refStr)) void refreshChain(provider, profile)
     }
   })
+
+  /** The ordered, non-empty spare-key list for a provider. */
+  const usableChain = (provider: string): string[] =>
+    (chainCaches.get(provider) ?? []).filter((value): value is string => value !== undefined && value.length > 0)
 
   const lifetime = new AbortController()
 
   /**
-   * Advance to the next additional key, write its cached value to the target
-   * reference, log and emit telemetry, and return a retry action. Returns
-   * `undefined` (delegate) when the pool is exhausted or the cap is reached,
-   * when in cooldown, when the next extra has no cached value, or when writing
-   * the credential is rejected.
+   * Attempt one rotation: write `chain[toIndex]` into the env reference, log and
+   * emit telemetry, and return a retry action. Returns `undefined` (delegate)
+   * when the chain is empty, the window is exhausted (every chain key tried this
+   * window), or the credential write is rejected.
    */
   const rotate = async (
     provider: string,
-    profile: RotationProfile,
     failure: LlmFailure,
     signal: AbortSignal,
   ): Promise<RequestErrorAction | undefined> => {
-    const extras = extrasOf(profile)
     const state = getState(provider)
-    const now = Date.now()
-
-    // Cooldown: refuse to rotate this provider and delegate.
-    if (now < state.cooldownUntil) {
-      const remainingMs = state.cooldownUntil - now
-      console.error(
-        '[llm-key-rotation] provider "%s" in cooldown (~%d ms remaining); delegating',
-        provider, remainingMs,
-      )
+    const chainKeys = usableChain(provider)
+    if (chainKeys.length === 0) {
+      console.error('[llm-key-rotation] provider "%s" has no stored chain keys; delegating', provider)
       return undefined
     }
-
-    const toIndex = state.index + 1
-    const cap = profile.maxIncidentRotations ?? extras.length
-    if (toIndex >= extras.length || state.rotatedSinceSuccess >= cap) {
-      // Incident exhausted: enter cooldown if requested, then delegate to
-      // downstream recovery (llm-retry or terminal). NOT `undefined` alone —
-      // undefined IS the delegate action returned here, letting the waterfall
-      // reach llm-retry's own recovery path.
-      if (profile.cooldownMs !== undefined && profile.cooldownMs > 0) {
-        state.cooldownUntil = now + profile.cooldownMs
+    const now = Date.now()
+    const fresh = state.lastWriteAt !== undefined && (now - state.lastWriteAt) < CHAIN_WINDOW_MS
+    let startIndex: number
+    if (fresh) {
+      startIndex = state.nextIndex
+      if (startIndex >= chainKeys.length) {
+        // Every chain key was already written within this window and failures
+        // keep arriving: none worked — delegate instead of spinning forever.
         console.error(
-          '[llm-key-rotation] provider "%s" exhausted after %d rotation(s); entering cooldown %d ms and delegating',
-          provider, state.rotatedSinceSuccess, profile.cooldownMs,
+          '[llm-key-rotation] provider "%s" exhausted all %d chain keys within the window; delegating',
+          provider, chainKeys.length,
         )
-      } else {
-        console.error(
-          '[llm-key-rotation] provider "%s" exhausted after %d rotation(s); delegating',
-          provider, state.rotatedSinceSuccess,
-        )
+        return undefined
       }
-      return undefined
+    } else {
+      // Stale write (or first rotation): start over from the chain head.
+      startIndex = 0
     }
 
     const fused = AbortSignal.any([signal, lifetime.signal])
     if (fused.aborted) return undefined
-    const fromRef = state.index < 0 ? profile.targetRef : extras[state.index]
-    const toRef = extras[toIndex]!
-    const value = poolCaches.get(provider)?.get(toIndex)
-    if (value === undefined) {
-      console.error(
-        '[llm-key-rotation] pool ref "%s" for provider "%s" has no stored value; delegating',
-        toRef, provider,
-      )
-      return undefined
-    }
+    const toRef = envRefOf(provider)
+    const value = chainKeys[startIndex]!
+    const lastWritten = state.lastWriteAt
     try {
-      await ctx.credentials.set(credentialRef(profile.targetRef), value)
+      await ctx.credentials.set(credentialRef(toRef), value)
     } catch (error: unknown) {
       console.error(
         '[llm-key-rotation] could not write rotated key to "%s" for provider "%s"; delegating',
-        profile.targetRef, provider,
+        toRef, provider,
       )
       console.error(error)
       return undefined
     }
     if (fused.aborted) return undefined
-    state.index = toIndex
-    state.rotatedSinceSuccess += 1
+    state.lastWriteAt = now
+    state.nextIndex = startIndex + 1
+    state.rotationId = RotationId(randomUUID())
     const payload: KeyRotationEvent = {
       provider,
       rotationId: state.rotationId,
       triggerCode: failure.code,
-      fromRef,
       toRef,
-      retry: state.rotatedSinceSuccess,
-      targetRef: profile.targetRef,
+      chainIndex: startIndex,
+      targetRef: toRef,
       failure,
     }
     console.log(
-      '[llm-key-rotation] rotated provider="%s" "%s"→"%s" (%s) retry=%d rotationId=%s',
-      provider, fromRef, toRef, failure.code, state.rotatedSinceSuccess, state.rotationId,
+      '[llm-key-rotation] rotated provider="%s" chain[%d]→"%s" (%s) window=%s lastWriteAge=%s',
+      provider, startIndex, toRef, failure.code,
+      fresh ? 'fresh' : 'fresh-start',
+      lastWritten === undefined ? '–' : `${Math.round((now - lastWritten) / 1000)}s`,
     )
     ctx.emit('llm/key-rotation', payload)
     return { kind: 'retry' }
@@ -374,13 +274,13 @@ export function apply(ctx: Context, config: Config): void {
     if (lifetime.signal.aborted) return Promise.resolve<RequestErrorAction | undefined>(undefined)
     const { provider, failure, signal } = payload
     const profile = profiles()[provider]
-    if (profile === undefined || !profile.triggerCodes.includes(failure.code)) return next()
+    if (profile === undefined || !profile.enabled || !profile.rotate_on.includes(failure.code)) return next()
     const state = getState(provider)
     // Serialize rotations for one provider so concurrent errors (multiple
-    // agents on the same route) advance the index and write the credential in
+    // agents on the same route) advance the chain and write the credential in
     // order rather than racing on the shared reference.
     const result = state.chain
-      .then(() => (lifetime.signal.aborted ? undefined : rotate(provider, profile, failure, signal)))
+      .then(() => (lifetime.signal.aborted ? undefined : rotate(provider, failure, signal)))
       .then((action) => action ?? next())
       .catch((error: unknown) => {
         // A rotation failure must never break the recovery waterfall; delegate.
@@ -403,10 +303,7 @@ export function apply(ctx: Context, config: Config): void {
       current = source
     },
     onChange: () => {
-      // A changed profile set refreshes caches; a new or cleared primary is
-      // detected on the next refresh. No proactive seed: the primary is owned
-      // by the main settings.
-      void refreshAllCaches()
+      void refreshAllChains()
     },
   })
 }

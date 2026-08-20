@@ -1,15 +1,15 @@
 /**
- * Key Rotation settings card — manages a provider's **additional** keys on top
- * of a primary key configured through the harness main settings (Models). If
- * the primary is not configured, the card shows a gate message and disables the
- * key editor. Storing/removing/reordering an additional key persists the
- * profile automatically (no Save button).
+ * Key Rotation settings card — manages a provider's spare-key chain. Active keys
+ * are written by the server into the provider's env reference; this card manages
+ * the spare-key chain (`apiKeyEnvChain` refs). Each saved key is stored and never
+ * read back, so its input becomes disabled with a `[hidden]` placeholder and can
+ * only be removed.
  */
 
-import { type ReactNode, useState, useCallback } from 'react'
+import { type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
-  KeyRotationCardFace, KeyRotationCardState, RotationProviderRow, KeyEntry,
+  KeyRotationCardFace, KeyRotationCardState, RotationProviderRow, ChainEntry,
 } from './key-rotation-card-controller.ts'
 import type { KeyRotationKey } from './locales.ts'
 import css from './KeyRotationCard.module.css'
@@ -20,7 +20,7 @@ export type KeyRotationCardProps =
   & PropsLocale<'settings.key-rotation'>
   & InjectFace<KeyRotationCardFace>
 
-const TRIGGERS: ReadonlyArray<{ code: string, labelKey: KeyRotationKey }> = [
+const ROTATE_ON: ReadonlyArray<{ code: string, labelKey: KeyRotationKey }> = [
   { code: 'QUOTA', labelKey: 'triggerQuota' },
   { code: 'RATE_LIMIT', labelKey: 'triggerRateLimit' },
   { code: 'AUTH', labelKey: 'triggerAuth' },
@@ -31,22 +31,12 @@ const TRIGGERS: ReadonlyArray<{ code: string, labelKey: KeyRotationKey }> = [
  * @param props - composed slot props (runtime, locale, inject face).
  */
 export function KeyRotationCard(props: KeyRotationCardProps): ReactNode {
-  const { t, useKeyRotationCard, addKey, removeKey, editKey, moveKey, toggleTrigger, storeKey } = props
+  const { t, useKeyRotationCard, toggleEnabled, toggleRotateOn, addKey, removeKey, editKey, save } = props
   const state = useKeyRotationCard((s: KeyRotationCardState) => s)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-
-  const toggleExpand = useCallback((provider: string) => {
-    setExpanded(prev => {
-      const next = new Set(prev)
-      if (next.has(provider)) next.delete(provider)
-      else next.add(provider)
-      return next
-    })
-  }, [])
 
   if (!state.available) return null
   if (state.error !== null) return <div className={css.errorBanner}>{state.error}</div>
-  if (state.providers.length === 0) return null
+  if (state.providers.length === 0) return <div className={css.emptyProviders}>{t('noProviders')}</div>
 
   return (
     <div className={css.card}>
@@ -60,14 +50,12 @@ export function KeyRotationCard(props: KeyRotationCardProps): ReactNode {
           <ProviderSection
             key={row.provider}
             row={row}
-            expanded={expanded.has(row.provider)}
-            onToggleExpand={() => toggleExpand(row.provider)}
+            onToggleEnabled={(enabled) => toggleEnabled(row.provider, enabled)}
+            onToggleRotateOn={(code) => toggleRotateOn(row.provider, code)}
             onAddKey={() => addKey(row.provider)}
             onRemoveKey={(keyId) => removeKey(row.provider, keyId)}
             onEditKey={(keyId, val) => editKey(row.provider, keyId, val)}
-            onMoveKey={(keyId, dir) => moveKey(row.provider, keyId, dir)}
-            onToggleTrigger={(code) => toggleTrigger(row.provider, code)}
-            onStoreKey={(keyId) => storeKey(row.provider, keyId)}
+            onSave={() => save(row.provider)}
             t={t}
           />
         ))}
@@ -76,157 +64,115 @@ export function KeyRotationCard(props: KeyRotationCardProps): ReactNode {
   )
 }
 
-/** One provider section with its additional-key chain. */
+/** One provider section with its toggle, rotate-on chips, and spare-key chain. */
 function ProviderSection(props: {
   row: RotationProviderRow
-  expanded: boolean
-  onToggleExpand: () => void
+  onToggleEnabled: (enabled: boolean) => void
+  onToggleRotateOn: (code: string) => void
   onAddKey: () => void
   onRemoveKey: (keyId: string) => void
   onEditKey: (keyId: string, val: string) => void
-  onMoveKey: (keyId: string, dir: 'up' | 'down') => void
-  onToggleTrigger: (code: string) => void
-  onStoreKey: (keyId: string) => void
+  onSave: () => void
   t: (key: KeyRotationKey) => string
 }): ReactNode {
-  const { row, expanded, onToggleExpand, onAddKey, onRemoveKey, onEditKey, onMoveKey, onToggleTrigger, onStoreKey, t } = props
+  const { row, onToggleEnabled, onToggleRotateOn, onAddKey, onRemoveKey, onEditKey, onSave, t } = props
+  const hasChain = row.chain.length > 0
 
   return (
     <div className={css.provider}>
-      <div className={css.providerHeader} onClick={onToggleExpand}>
+      <div className={css.providerHeader}>
+        <label className={css.switch}>
+          <input type="checkbox" checked={row.enabled} onChange={(e) => onToggleEnabled(e.target.checked)} />
+          <span className={css.switchSlider} />
+        </label>
         <span className={css.providerName}>{row.displayName}</span>
-        {row.active
-          ? <span className={`${css.tag} ${css.tagActive}`}>{t('active')}</span>
-          : <span className={`${css.tag} ${css.tagInactive}`}>{t('inactive')}</span>}
-        <span className={css.keyCount}>
-          {row.keys.length} {row.keys.length === 1 ? t('additionalKeyOne') : t('additionalKeyMany')}
-        </span>
-        <span className={`${css.chevron} ${expanded ? css.chevronOpen : ''}`}>▸</span>
+        <span className={css.envRef}>{row.envRef}</span>
       </div>
 
-      {expanded && (
-        <div className={css.providerBody}>
-          <div className={css.primaryRow}>
-            <span className={css.primaryLabel}>{t('primary')}</span>
-            <code className={css.primaryRef}>{row.primaryRef ?? '—'}</code>
-            {row.primaryConfigured ? (
-              <span className={`${css.tag} ${css.tagActive}`}>{t('primaryConfigured')}</span>
-            ) : (
-              <span className={`${css.tag} ${css.tagWarn}`}>{t('primaryMissing')}</span>
-            )}
+      <div className={css.providerBody}>
+        <div className={css.triggers}>
+          <div className={css.chainLabel}>{t('triggers')}</div>
+          <div className={css.triggerChips}>
+            {ROTATE_ON.map(({ code, labelKey }) => (
+              <button
+                key={code}
+                className={`${css.chip} ${row.rotateOn.includes(code) ? css.chipOn : ''}`}
+                onClick={() => onToggleRotateOn(code)}
+              >
+                {t(labelKey)}
+              </button>
+            ))}
           </div>
-
-          {row.primaryConfigured ? (
-            <>
-              <div className={css.keyChain}>
-                <div className={css.chainLabel}>{t('additionalKeys')}</div>
-                {row.keys.length === 0 && (
-                  <div className={css.emptyHint}>{t('noAdditionalKeys')}</div>
-                )}
-                {row.keys.map((key, i) => (
-                  <KeyRow
-                    key={key.id}
-                    entry={key}
-                    index={i}
-                    total={row.keys.length}
-                    onRemove={() => onRemoveKey(key.id)}
-                    onEdit={(val) => onEditKey(key.id, val)}
-                    onMove={(dir) => onMoveKey(key.id, dir)}
-                    onStore={() => onStoreKey(key.id)}
-                    t={t}
-                  />
-                ))}
-                <button className={`${css.btn} ${css.btnAdd}`} onClick={onAddKey}>
-                  + {t('addKey')}
-                </button>
-              </div>
-
-              <div className={css.triggers}>
-                <div className={css.chainLabel}>{t('triggers')}</div>
-                <div className={css.triggerChips}>
-                  {TRIGGERS.map(({ code, labelKey }) => (
-                    <button
-                      key={code}
-                      className={`${css.chip} ${row.triggerCodes.includes(code) ? css.chipOn : ''}`}
-                      onClick={() => onToggleTrigger(code)}
-                    >
-                      {t(labelKey)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className={css.gateMessage}>{t('primaryGate')}</div>
-          )}
         </div>
-      )}
+
+        {hasChain ? (
+          <>
+            <div className={css.keyList}>
+              {row.chain.map((key) => (
+                <KeyRow
+                  key={key.id}
+                  entry={key}
+                  onRemove={() => onRemoveKey(key.id)}
+                  onEdit={(val) => onEditKey(key.id, val)}
+                  t={t}
+                />
+              ))}
+            </div>
+
+            <div className={css.actions}>
+              <button
+                className={`${css.btn} ${css.btnPrimary}`}
+                onClick={onSave}
+                disabled={!row.chain.some((k) => k.value.trim() !== '')}
+              >
+                {t('save')}
+              </button>
+              <button className={`${css.btn} ${css.btnAdd}`} onClick={onAddKey}>
+                + {t('addKey')}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className={css.emptyChain}>
+            <button className={`${css.btn} ${css.btnAdd}`} onClick={onAddKey}>
+              + {t('addKey')}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-/** One additional key row in the chain. */
+/** One key row in the chain. */
 function KeyRow(props: {
-  entry: KeyEntry
-  index: number
-  total: number
+  entry: ChainEntry
   onRemove: () => void
   onEdit: (val: string) => void
-  onMove: (dir: 'up' | 'down') => void
-  onStore: () => void
   t: (key: KeyRotationKey) => string
 }): ReactNode {
-  const { entry, index, total, onRemove, onEdit, onMove, onStore, t } = props
-  const showRemove = total > 1
+  const { entry, onRemove, onEdit, t } = props
 
   return (
     <div className={css.keyRow}>
-      <div className={css.keyPosition}>#{index + 1}</div>
-      <div className={css.keyControls}>
-        <button
-          className={css.iconBtn}
-          onClick={() => onMove('up')}
-          disabled={index === 0}
-          title={t('moveUp')}
-        >↑</button>
-        <button
-          className={css.iconBtn}
-          onClick={() => onMove('down')}
-          disabled={index === total - 1}
-          title={t('moveDown')}
-        >↓</button>
-      </div>
+      <div className={css.keyPosition}>#{entry.n}</div>
       <input
-        className={css.keyInput}
+        className={`${css.keyInput} ${entry.saved ? css.keyInputSaved : ''}`}
         type="password"
-        value={entry.value}
+        value={entry.saved ? '' : entry.value}
         onChange={(e) => onEdit(e.target.value)}
-        placeholder={t('additionalKeyPlaceholder')}
+        placeholder={entry.saved ? t('hidden') : t('keyPlaceholder')}
+        disabled={entry.saved}
+        readOnly={entry.saved}
         spellCheck={false}
       />
       <button
-        className={`${css.btn} ${css.btnStore}`}
-        onClick={onStore}
-        disabled={entry.value.trim() === '' || entry.storing}
+        className={`${css.iconBtn} ${css.iconBtnRemove}`}
+        onClick={onRemove}
+        title={t('remove')}
       >
-        {entry.storing ? '…' : t('store')}
+        ✕
       </button>
-      <span className={css.keyStatus}>
-        {entry.stored ? (
-          <span className={css.statusOk}>✓ {t('stored')}</span>
-        ) : entry.filled ? (
-          <span className={css.statusFilled}>● {t('filled')}</span>
-        ) : entry.failed ? (
-          <span className={css.statusErr}>✗ {t('failed')}</span>
-        ) : (
-          <span className={css.statusEmpty}>{t('empty')}</span>
-        )}
-      </span>
-      {showRemove && (
-        <button className={`${css.iconBtn} ${css.iconBtnRemove}`} onClick={onRemove} title={t('remove')}>
-          ✕
-        </button>
-      )}
     </div>
   )
 }

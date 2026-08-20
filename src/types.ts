@@ -31,17 +31,15 @@ declare module '@deepseek-ai/cordis' {
 export interface KeyRotationEvent {
   /** Provider route whose failing key was rotated. */
   readonly provider: string
-  /** Stable id shared across one provider's consecutive rotation chain (one incident). */
+  /** Id for the rotation attempt; refreshed on each committed rotation. */
   readonly rotationId: RotationId
   /** The failure code that triggered the rotation. */
   readonly triggerCode: string
-  /** Credential reference that was active when the failure arrived (the primary `targetRef` while index is -1). */
-  readonly fromRef: string
-  /** Credential reference now made active (the additional key written to `targetRef`). */
+  /** The credential reference written with the rotated key (the provider's apiKeyEnv). */
   readonly toRef: string
-  /** One-based position of this rotation in the current incident chain. */
-  readonly retry: number
-  /** The credential reference the adapter reads (the rotation target / primary). */
+  /** Position inside the chain that was written. */
+  readonly chainIndex: number
+  /** The credential reference the adapter reads (the rotation target / env). */
   readonly targetRef: string
   /** The normalized provider-neutral failure that caused the rotation. */
   readonly failure: LlmFailure
@@ -49,32 +47,14 @@ export interface KeyRotationEvent {
 
 /** One provider route's key-rotation profile. */
 export interface RotationProfile {
-  /**
-   * Credential reference the adapter resolves per request (its `apiKeyEnv`).
-   * This is the **primary** key, configured through the harness main settings
-   * (Models), never through this plugin. Rotation writes each additional key's
-   * value here, so the next request authenticates with the rotated key without
-   * a restart.
-   */
-  targetRef: string
-  /**
-   * Ordered chain of **additional** credential references (extras on top of the
-   * primary `targetRef`). Rotation advances through these one per qualifying
-   * failure. An entry equal to `targetRef` is ignored, so a legacy profile
-   * whose head duplicated the primary degrades cleanly.
-   */
-  poolRefs: string[]
+  /** Whether rotation is active for this provider. */
+  enabled: boolean
   /** Failure codes that trigger a rotation (e.g. `QUOTA`, `RATE_LIMIT`, `AUTH`). */
-  triggerCodes: string[]
+  rotate_on: string[]
   /**
-   * Optional hard cap on rotations per incident. Defaults to the number of
-   * additional keys (each extra is tried at most once). A lower value tries
-   * fewer keys before delegating. There is no `cycle` mode.
+   * Credential references holding the spare keys, one value per reference
+   * (e.g. `OPENCODE_GO_API_KEY_CHAIN_1`, `_CHAIN_2`, …). Values live in the
+   * credential store; the web card writes them.
    */
-  maxIncidentRotations?: number
-  /**
-   * Optional cooldown in milliseconds once the cap is reached: the plugin stops
-   * rotating this provider for the window and delegates.
-   */
-  cooldownMs?: number
+  apiKeyEnvChain: string[]
 }

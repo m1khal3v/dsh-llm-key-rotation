@@ -8,15 +8,15 @@
 # dsh-llm-key-rotation
 
 Seamless API-key rotation for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) LLM
-providers. When a model request hits a subscription limit (quota exhausted,
-rate-limited, or auth failure), the plugin rotates to the next **additional** key and retries —
-without a restart and without a model-visible surface.
+providers. When a model request hits a subscription limit (quota exhausted, rate-limited, or
+auth failure), the plugin writes the next spare key from a provider's chain into the active
+API-key reference and retries — without a restart and without a model-visible surface.
 
-The plugin manages only **additional keys on top of one primary key**. The primary key is
-configured through the harness's main settings (the Models page / `apiKeyEnv`), never through
-this plugin. On a failure the plugin writes each additional key as the active key in turn;
-once every additional key has been tried it delegates to downstream recovery. There is no
-indefinite `cycle` mode.
+The plugin manages only a **spare-key chain** per provider. The active key lives in the
+provider's `apiKeyEnv` (configured in the main settings); the spare keys live, one per
+credential reference, in references named `OPENCODE_GO_API_KEY_CHAIN_1`, `_CHAIN_2`, …
+and are listed per provider in the plugin's `apiKeyEnvChain` setting. The web card writes the
+spare keys there.
 
 The project does not patch DeepSeek Harness core. Installing the plugin enables key
 rotation, and removing it leaves no core modifications behind.
@@ -28,73 +28,78 @@ rotation, and removing it leaves no core modifications behind.
 
 DeepSeek Harness adapters resolve the API key **once per model request** through the
 `ctx.credentials` seam. This plugin hooks into the agent loop's `agent/request-error`
-recovery waterfall: when a request fails with a configured trigger code (`QUOTA`,
-`RATE_LIMIT`, `AUTH`), it writes the next **additional** pool key's value to the primary
-credential reference the adapter reads, then returns `{ kind: 'retry' }`. The loop opens a
-fresh turn that authenticates with the rotated key — the adapter re-resolves the reference
-on the next request and picks up the new value automatically.
+recovery waterfall: when a request fails with a configured `rotate_on` code (`QUOTA`,
+`RATE_LIMIT`, `AUTH`), it writes the next spare key's value into the provider's env reference
+(`OPENCODE_GO_API_KEY`), then returns `{ kind: 'retry' }`. The loop opens a fresh turn that
+authenticates with the rotated key — the adapter re-resolves the reference on the next
+request and picks up the new value automatically.
 
 ```text
-primary key configured in main settings (Models)
+spare keys stored under …_CHAIN_N (written by the web card)
 model request fails (QUOTA / RATE_LIMIT / AUTH)
   → agent/request-error waterfall
-  → llm-key-rotation listener
-  → writes additional key[0] value to targetRef (primary ref)
+  → llm-key-rotation listener (provider enabled + rotate_on match)
+  → read next spare key from the chain cache
+  → write it to the provider env ref (OPENCODE_GO_API_KEY)
   → [llm-key-rotation] rotated …  (stdout log)
   → return { kind: 'retry' }
-  → loop opens a fresh turn → adapter re-resolves targetRef → new key
-  → on success the primary key is restored to targetRef
+  → loop opens a fresh turn → adapter re-resolves env ref → new key
 ```
+
+## Walk discipline (no unbounded spinning)
+
+Each spare-key write is timestamped. On a failing request:
+
+- **within 300 s of the last write** → advance to the next chain entry (a live series of
+  failures walks the chain forward, one spare key per failure);
+- **300 s or more after the last write** → restart from the chain head (index 0) — the
+  previously-last key may have become stale, so the spares are retried from the beginning;
+- **every chain key already written within one 300 s window and a failure still arrives** →
+  delegate to downstream recovery instead of spinning forever.
+
+The env reference is **never restored after success**: it keeps the last written (working or
+last-tried) key, so the adapter simply continues with the last key that worked.
 
 ## Quick Start
 
-Prerequisites: one primary API key (configured through the harness main settings) and at
-least one **additional** key for the same provider, stored as separate credential
-references.
+Prerequisites: a provider added in the harness main settings (Models) with its `apiKeyEnv`
+configured, plus at least one spare key.
 
 ### Install the plugin
-
-The `dsh` CLI is required. It comes from the `@deepseek-ai/dsh` package.
 
 ```sh
 dsh plugin --profile web add @m1khal3v/dsh-llm-key-rotation
 ```
 
-### Boot and configure
+### Configure in the web card
 
-```sh
-dsh web
-```
+Open the plugin's **Key Rotation** card (`Settings → Plugins → Configurable`):
 
-Configure rotation profiles through the `llm-key-rotation:` settings section (written via
-the web UI settings card or `$DSH_HOME/settings.yaml`):
+1. Enable the provider with the toggle.
+2. Pick which failure codes rotate (`rotate_on`).
+3. Click **+ Add key**, paste each spare key, then **Save**. Saved keys show as `[hidden]`
+   (they are written to the credential store and never read back); remove a key with its ✕
+   button. Only providers shown (those added in the main settings / `active`) appear.
+
+The profile is stored under `llm-key-rotation.providers.<provider>` as
+`{ enabled, rotate_on, apiKeyEnvChain }`, where `apiKeyEnvChain` lists the `_CHAIN_N`
+references, e.g.:
 
 ```yaml
 llm-key-rotation:
   providers:
-    opencode:
-      targetRef: OPENCODE_API_KEY
-      poolRefs:
-        - OPENCODE_API_KEY_2
-        - OPENCODE_API_KEY_3
-      triggerCodes:
+    opencode-go:
+      enabled: true
+      rotate_on:
         - QUOTA
-        - RATE_LIMIT
         - AUTH
-      maxIncidentRotations: 2
-      cooldownMs: 60000
+      apiKeyEnvChain:
+        - OPENCODE_GO_API_KEY_CHAIN_1
+        - OPENCODE_GO_API_KEY_CHAIN_2
 ```
 
-- `targetRef`: the **primary** reference the adapter reads (its `apiKeyEnv`). Set through
-  the main settings, not the plugin.
-- `poolRefs`: **additional** references only. An entry equal to `targetRef` is ignored, so a
-  legacy profile whose head duplicated the primary still works.
-- Store the additional key values as credentials (through the web card or the credentials
-  API). The plugin reads only references, never values.
-
-> **Important:** if you configure key rotation *before* the plugin 0.5 upgrade and your
-> profile stored `targetRef` as the first element of `poolRefs`, that head is now ignored —
-> the primary is no longer part of the rotation pool.
+The spare key values themselves live in the credential store under those references (the
+web card writes them); the plugin never reads them back over the wire.
 
 ## Configuration
 
@@ -102,11 +107,12 @@ Each provider route gets one rotation profile:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `targetRef` | — (required) | **Primary** credential reference the adapter resolves per request (its `apiKeyEnv`). Configured in the main settings. |
-| `poolRefs` | — (required, min 1) | Ordered chain of **additional** credential references. Rotation advances through these one per qualifying failure. |
-| `triggerCodes` | `['QUOTA','AUTH']` | Failure codes that trigger a rotation. Common: `QUOTA`, `RATE_LIMIT`, `AUTH`. |
-| `maxIncidentRotations` | number of extras | Optional hard cap on rotations per incident; a lower value tries fewer keys before delegating. |
-| `cooldownMs` | none | Optional cooldown (ms) once the cap is reached, during which the plugin stops rotating this provider and delegates. |
+| `enabled` | `false` | Whether rotation is active for this provider. |
+| `rotate_on` | `['QUOTA','AUTH']` | Failure codes that trigger a rotation. Common: `QUOTA`, `RATE_LIMIT`, `AUTH`. |
+| `apiKeyEnvChain` | `[]` | Credential references holding the spare keys, one value per reference. |
+
+If a provider is disabled or `apiKeyEnvChain` is empty, the plugin hands the failure to
+downstream recovery immediately.
 
 ### Composition entry (cordis.patch.yml)
 
@@ -137,12 +143,12 @@ The interaction depends on which trigger codes are configured:
 
 ## Telemetry (stdout)
 
-Every rotation, exhaustion, cooldown, and primary-restore is written to **stdout of the
-process that launches `dsh`** with a `[llm-key-rotation]` tag — e.g.:
+Every rotation and delegate is written to **stdout of the process that launches `dsh`** with
+a `[llm-key-rotation]` tag — e.g.:
 
 ```text
-[llm-key-rotation] rotated provider="opencode" "OPENCODE_API_KEY"→"OPENCODE_API_KEY_2" (QUOTA) retry=1 rotationId=…
-[llm-key-rotation] restored primary "OPENCODE_API_KEY" for provider "opencode"; index→0
+[llm-key-rotation] rotated provider="opencode-go" chain[0]→"OPENCODE_GO_API_KEY" (QUOTA) window=fresh-start lastWriteAge=–
+[llm-key-rotation] rotated provider="opencode-go" chain[1]→"OPENCODE_GO_API_KEY" (QUOTA) window=fresh lastWriteAge=2s
 ```
 
 Run `dsh web` from a terminal you can watch to confirm rotation works. No key values are
@@ -151,41 +157,37 @@ ever logged — only references, indices, and failure codes.
 A live `llm/key-rotation` Cordis event is also emitted after each rotation for in-process
 consumers (`ctx.on('llm/key-rotation', …)`); the event is non-durable.
 
-## Pool Value Caching
+## Chain value caching
 
-Additional key values are cached at load and refreshed on settings change or
-`credentials/updated` for a pool ref. The cache preserves original extra values even after
-`targetRef` is overwritten by a rotation. After a successful model step the plugin restores
-the **primary** value to `targetRef`, so the next incident begins from the primary again.
+Spare-key values are cached at load and refreshed on settings change or `credentials/updated`
+for a chain reference, so a newly-stored spare key is picked up without a restart.
 
 ## Web UI Settings Card
 
 The plugin ships a browser half that registers a **Key Rotation** card in the Plugins
 settings page (`Settings → Plugins → Configurable`). The card:
 
-- Shows each provider's **primary** reference and whether it is configured. If the primary
-  is not configured, it shows "configure the primary key in the main settings first" and
-  disables the additional-key editor.
-- Lets you **add / remove / reorder additional keys** and store their values directly
-  (values, not env-var names). Storing a key writes it to the credential store and saves the
-  profile **automatically** — there is no Save button.
-- Shows each additional key's **filled** state (a stored value exists) and sticker after the
-  current store.
-- Lets you pick which trigger codes rotate.
+- Shows only providers added in the main settings (`active`). If none — a "no providers"
+  notice.
+- Offers a per-provider **enabled** toggle and **rotate_on** chips.
+- Lets you **add / remove spare keys**. Save writes the non-empty keys to their `_CHAIN_N`
+  references and persists `apiKeyEnvChain`; saved keys become disabled `[hidden]` fields
+  (never read back) and can only be removed.
 
-The card reads/writes through the same wire APIs the Models page uses, so no new host-side
-code is required. The browser bundle is materialized through the dsh module system as
-`lib/client.js`.
+The card reads/writes through the same wire APIs the Models page uses (values are written
+but never read back). The browser bundle is materialized through the dsh module system as
+`lib/client.js`. State is re-read whenever the card (re)loads, so reopening the settings
+window refreshes the current configuration.
 
 ## Known Limitations
 
-- **`targetRef` must not be shadowed by the environment** — `ctx.credentials.set` is
-  rejected when a read-only environment variable supplies the same reference. Store
-  additional keys under distinct references and let the plugin write them to `targetRef`
-  through the managed credential store.
-- **Pool values are cached at load** — a key added to a pool reference after startup is
-  picked up through the `credentials/updated` event or a settings change, not by re-reading
-  on every rotation.
+- **Saved key values cannot be shown** — the credentials wire API never returns secret
+  values, so a stored key's input is disabled with a `[hidden]` placeholder; it can only be
+  removed.
+- **`apiKeyEnvChain` must not be shadowed by the environment** — `ctx.credentials.set` is
+  rejected when a read-only environment variable supplies the same reference.
+- **Chain values are cached at load** — a spare key added after startup is picked up through
+  the `credentials/updated` event or a settings change, not by re-reading on every rotation.
 - **`RATE_LIMIT` rotation follows `dsh-llm-retry`'s budget** — remove `RATE_LIMIT` from the
   provider's `retryableCodes` to rotate immediately.
 - **The `llm/key-rotation` event is non-durable** — it is a live Cordis event, not a

@@ -36,7 +36,7 @@
 .providers {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .provider {
@@ -50,18 +50,11 @@
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.1s;
-}
-
-.providerHeader:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .providerName {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--dsw-alias-label-primary);
   flex: 1;
   min-width: 0;
@@ -70,43 +63,56 @@
   white-space: nowrap;
 }
 
-.tag {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 500;
+.envRef {
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--dsw-alias-label-secondary);
   white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.tagActive {
-  background: var(--dsw-alias-state-business-primary);
-  color: var(--dsw-alias-button-primary-fill);
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
-.tagWarn {
-  background: var(--dsw-alias-state-warn-secondary);
-  color: var(--dsw-alias-state-warn-primary);
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
 }
 
-.tagInactive {
+.switchSlider {
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
   background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
+  transition: background 0.2s;
+  position: relative;
 }
 
-.keyCount {
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary);
-  white-space: nowrap;
+.switchSlider::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-secondary);
+  transition: transform 0.2s, background 0.2s;
 }
 
-.chevron {
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary);
-  transition: transform 0.15s;
+.switch input:checked + .switchSlider {
+  background: var(--dsw-alias-button-primary-fill);
 }
 
-.chevronOpen {
-  transform: rotate(90deg);
+.switch input:checked + .switchSlider::before {
+  transform: translateX(16px);
+  background: var(--dsw-alias-button-primary-hover);
 }
 
 .providerBody {
@@ -114,57 +120,7 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-.primaryRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-layer-3);
-  border: 1px solid var(--dsw-alias-border-l1);
-}
-
-.primaryLabel {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.primaryRef {
-  font-size: 12px;
-  font-family: monospace;
-  color: var(--dsw-alias-label-primary);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gateMessage {
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: var(--dsw-alias-state-warn-secondary);
-  border: 1px solid var(--dsw-alias-state-warn-primary);
-  color: var(--dsw-alias-state-warn-label);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.emptyHint {
-  font-size: 13px;
-  color: var(--dsw-alias-label-tertiary);
-  padding: 4px 0;
-}
-
-.keyChain {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
 }
 
 .chainLabel {
@@ -175,144 +131,11 @@
   letter-spacing: 0.04em;
 }
 
-.keyRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.keyPosition {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary);
-  width: 24px;
-  flex-shrink: 0;
-  text-align: center;
-}
-
-.keyControls {
-  display: flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.iconBtn {
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: none;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  border-radius: 4px;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.1s, color 0.1s;
-}
-
-.iconBtn:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.iconBtn:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-.iconBtnRemove:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.keyInput {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  font-family: monospace;
-  outline: none;
-  transition: border-color 0.15s;
-}
-
-.keyInput:focus {
-  border-color: var(--dsw-alias-brand-primary);
-}
-
-.keyInput::placeholder {
-  color: var(--dsw-alias-label-dimmed);
-}
-
-.btn {
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 14px;
-  transition: background 0.15s, opacity 0.15s;
-  white-space: nowrap;
-}
-
-.btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.btnStore {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.btnStore:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
-}
-
-.btnAdd {
-  background: none;
-  border: 1px dashed var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-secondary);
-  padding: 8px;
-  text-align: center;
-}
-
-.btnAdd:hover {
-  border-color: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-brand-primary);
-}
-
-.keyStatus {
-  font-size: 12px;
-  white-space: nowrap;
-  min-width: 80px;
-}
-
-.statusOk {
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.statusFilled {
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.statusErr {
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.statusEmpty {
-  color: var(--dsw-alias-label-dimmed);
-}
-
 .triggers {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding-top: 12px;
 }
 
 .triggerChips {
@@ -341,6 +164,136 @@
   background: var(--dsw-alias-interactive-bg-hover-accent);
   border-color: var(--dsw-alias-brand-primary);
   color: var(--dsw-alias-brand-primary);
+}
+
+.keyList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.keyRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.keyPosition {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+  width: 30px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.keyInput {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-family: monospace;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.keyInput:focus {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.keyInput::placeholder {
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.keyInputSaved {
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
+}
+
+.keyInputSaved::placeholder {
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.iconBtn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+
+.iconBtnRemove:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.btn {
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 14px;
+  transition: background 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btnPrimary {
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-button-primary-foreground);
+  flex: 1;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.btnAdd {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  border: 1px dashed var(--dsw-alias-border-l2);
+  flex: 1;
+}
+
+.btnAdd:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.emptyChain {
+  display: flex;
+}
+
+.emptyChain .btnAdd {
+  flex: 1;
+}
+
+.emptyProviders {
+  padding: 14px;
+  font-size: 13px;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .errorBanner {

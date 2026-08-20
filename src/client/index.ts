@@ -2,8 +2,7 @@
  * Key-rotation settings card, browser half. Registers a card in the Plugins
  * settings page under the `settings.plugin.item` keyed slot, keyed to the
  * `llm-key-rotation` namespace. The card reads the configurable-provider
- * directory and manages a provider's **additional** keys (the primary key lives
- * in the main settings).
+ * directory and manages each provider's spare-key chain (its `_CHAIN_N` refs).
  * @module @m1khal3v/dsh-llm-key-rotation/client
  */
 
@@ -42,7 +41,6 @@ export function apply(ctx: ClientContext): void {
   const controller = new KeyRotationCardController(
     ctx.settingsScope.bind({ namespace: NS }),
     api,
-    ctx.settingsScope,
   )
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
