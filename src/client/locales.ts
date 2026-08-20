@@ -8,10 +8,9 @@ export const en = {
   triggerQuota: 'Quota exceeded',
   triggerRateLimit: 'Rate limited',
   triggerAuth: 'Auth failed (401/403)',
-  addKey: '+ Add key',
+  addKey: 'Add key',
   keyPlaceholder: 'Paste API key value…',
   save: 'Save',
-  hidden: '[hidden]',
   remove: 'Remove',
 }
 
@@ -23,10 +22,9 @@ export const zh = {
   triggerQuota: '配额已用尽',
   triggerRateLimit: '触发限流',
   triggerAuth: '认证失败 (401/403)',
-  addKey: '+ 添加密钥',
+  addKey: '添加密钥',
   keyPlaceholder: '粘贴 API 密钥值…',
   save: '保存',
-  hidden: '[已隐藏]',
   remove: '移除',
 }
 

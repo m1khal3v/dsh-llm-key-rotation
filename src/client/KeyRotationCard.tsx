@@ -86,60 +86,61 @@ function ProviderSection(props: {
           <span className={css.switchSlider} />
         </label>
         <span className={css.providerName}>{row.displayName}</span>
-        <span className={css.envRef}>{row.envRef}</span>
       </div>
 
-      <div className={css.providerBody}>
-        <div className={css.triggers}>
-          <div className={css.chainLabel}>{t('triggers')}</div>
-          <div className={css.triggerChips}>
-            {ROTATE_ON.map(({ code, labelKey }) => (
-              <button
-                key={code}
-                className={`${css.chip} ${row.rotateOn.includes(code) ? css.chipOn : ''}`}
-                onClick={() => onToggleRotateOn(code)}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-          </div>
-        </div>
+      {row.enabled && (
+        <div className={css.providerBody}>
+          {hasChain ? (
+            <>
+              <div className={css.keyList}>
+                {row.chain.map((key) => (
+                  <KeyRow
+                    key={key.id}
+                    entry={key}
+                    onRemove={() => onRemoveKey(key.id)}
+                    onEdit={(val) => onEditKey(key.id, val)}
+                    t={t}
+                  />
+                ))}
+              </div>
 
-        {hasChain ? (
-          <>
-            <div className={css.keyList}>
-              {row.chain.map((key) => (
-                <KeyRow
-                  key={key.id}
-                  entry={key}
-                  onRemove={() => onRemoveKey(key.id)}
-                  onEdit={(val) => onEditKey(key.id, val)}
-                  t={t}
-                />
-              ))}
-            </div>
+              <div className={css.actions}>
+                <button
+                  className={`${css.btn} ${css.btnPrimary}`}
+                  onClick={onSave}
+                  disabled={!row.chain.some((k) => k.value.trim() !== '')}
+                >
+                  {t('save')}
+                </button>
+                <button className={`${css.btn} ${css.btnAdd}`} onClick={onAddKey}>
+                  {t('addKey')}
+                </button>
+              </div>
 
-            <div className={css.actions}>
-              <button
-                className={`${css.btn} ${css.btnPrimary}`}
-                onClick={onSave}
-                disabled={!row.chain.some((k) => k.value.trim() !== '')}
-              >
-                {t('save')}
-              </button>
+              <div className={css.triggers}>
+                <div className={css.chainLabel}>{t('triggers')}</div>
+                <div className={css.triggerChips}>
+                  {ROTATE_ON.map(({ code, labelKey }) => (
+                    <button
+                      key={code}
+                      className={`${css.chip} ${row.rotateOn.includes(code) ? css.chipOn : ''}`}
+                      onClick={() => onToggleRotateOn(code)}
+                    >
+                      {t(labelKey)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className={css.emptyChain}>
               <button className={`${css.btn} ${css.btnAdd}`} onClick={onAddKey}>
-                + {t('addKey')}
+                {t('addKey')}
               </button>
             </div>
-          </>
-        ) : (
-          <div className={css.emptyChain}>
-            <button className={`${css.btn} ${css.btnAdd}`} onClick={onAddKey}>
-              + {t('addKey')}
-            </button>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -161,7 +162,7 @@ function KeyRow(props: {
         type="password"
         value={entry.saved ? '' : entry.value}
         onChange={(e) => onEdit(e.target.value)}
-        placeholder={entry.saved ? t('hidden') : t('keyPlaceholder')}
+        placeholder={entry.saved ? '••••••••••••••••••••' : t('keyPlaceholder')}
         disabled={entry.saved}
         readOnly={entry.saved}
         spellCheck={false}

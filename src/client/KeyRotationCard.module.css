@@ -107,12 +107,12 @@
 }
 
 .switch input:checked + .switchSlider {
-  background: var(--dsw-alias-button-primary-fill);
+  background: var(--dsw-alias-state-business-primary);
 }
 
 .switch input:checked + .switchSlider::before {
   transform: translateX(16px);
-  background: var(--dsw-alias-button-primary-hover);
+  background: var(--dsw-alias-label-primary-foreground);
 }
 
 .providerBody {
@@ -258,12 +258,17 @@
 
 .btnPrimary {
   background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-button-primary-foreground);
+  color: var(--dsw-alias-button-contrast-fill);
   flex: 1;
 }
 
 .btnPrimary:hover:not(:disabled) {
   background: var(--dsw-alias-button-primary-hover);
+}
+
+.btnPrimary:disabled {
+  background: var(--dsw-alias-button-primary-dimmed);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .btnAdd {
