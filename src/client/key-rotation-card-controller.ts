@@ -19,6 +19,21 @@ import type { SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runti
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type { IApiClient, CredentialView, ConfigurableProviderView } from '@deepseek-ai/dsh-api-remotes/client'
 
+/** The settings binder service (`ctx.settingsScope`): binds a scope to any namespace. */
+export interface SettingsBinder {
+  bind<T>(spec: { namespace: string }): SettingsScope<T>
+}
+
+/** Walk a nested settings-profile object by path (a provider's settings address). */
+function getPath(value: unknown, path: readonly string[]): unknown {
+  let current = value
+  for (const segment of path) {
+    if (typeof current !== 'object' || current === null) return undefined
+    current = (current as Record<string, unknown>)[segment]
+  }
+  return current
+}
+
 /** Derive the conventional additional-key credential reference for a provider route. */
 function deriveExtraKeyRef(provider: string, index: number): string {
   const base = provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
@@ -99,6 +114,8 @@ const DEFAULT_TRIGGERS = ['QUOTA', 'AUTH']
 interface SavedProfile {
   keys: KeyEntry[]
   triggerCodes: string[]
+  /** The saved primary reference (`targetRef`), used as a fallback when the adapter's section is unavailable. */
+  targetRef?: string
 }
 
 /**
@@ -108,16 +125,20 @@ interface SavedProfile {
 export class KeyRotationCardController {
   private readonly store: SnapshotStore<KeyRotationCardState>
   private rows = new Map<string, RotationProviderRow>()
+  private namespaceScopes = new Map<string, SettingsScope<Record<string, unknown>>>()
   private saving = false
   private failed = false
 
   /**
    * @param scope - the bound settings scope for the `llm-key-rotation` namespace.
    * @param api - the wire API client.
+   * @param binder - the settings binder service, used to read a provider's
+   *   `apiKeyEnv` from its OWN namespace section (e.g. `llm-pi-ai`).
    */
   constructor(
     private readonly scope: SettingsScope<Record<string, unknown>>,
     private readonly api: IApiClient,
+    private readonly binder: SettingsBinder,
   ) {
     this.store = createSnapshotStore(this.initialState())
     this.scope.subscribe(() => { void this.syncFromSettings() })
@@ -134,10 +155,23 @@ export class KeyRotationCardController {
       const response = await this.api.llm.providers({})
       if (!response.result.ok) throw new Error(response.result.error.message)
       const snapshot = this.scope.getSnapshot()
+      // Bind one scope per distinct owning namespace (e.g. `llm-pi-ai`) so the
+      // card can read each provider's `apiKeyEnv`. Subscribe so a namespace
+      // that is still loading re-runs this load once it becomes ready.
+      for (const entry of response.result.value.providers) {
+        if (this.namespaceScopes.has(entry.settingsNs)) continue
+        const bound = this.binder.bind<Record<string, unknown>>({ namespace: entry.settingsNs })
+        this.namespaceScopes.set(entry.settingsNs, bound)
+        bound.subscribe(() => {
+          if (bound.getSnapshot().status === 'ready') void this.loadProviders()
+        })
+      }
       this.rows.clear()
       for (const entry of response.result.value.providers) {
         const existing = this.readProfile(snapshot.value, entry.provider)
-        const primaryRef = this.readAdapterKeyRef(snapshot.value, entry)
+        const section = this.namespaceScopes.get(entry.settingsNs)?.getSnapshot().value
+        const primaryRef = this.readAdapterKeyRef(section, entry)
+          ?? existing?.targetRef
         this.rows.set(entry.provider, this.buildRow(entry, existing, primaryRef))
       }
       void this.refreshCredentials()
@@ -189,28 +223,25 @@ export class KeyRotationCardController {
     const keys: KeyEntry[] = (poolRefs ?? []).map((ref) => ({
       id: newKeyId(), ref, value: '', filled: false, stored: false, storing: false, failed: false,
     }))
+    const targetRef = profile['targetRef']
     return {
       keys,
       triggerCodes: (profile['triggerCodes'] as string[]) ?? [...DEFAULT_TRIGGERS],
+      ...typeof targetRef === 'string' && targetRef.length > 0 ? { targetRef } : {},
     }
   }
 
-  /** Read the adapter's apiKeyEnv from the settings section for a provider. */
+  /** Read the adapter's apiKeyEnv from its owning settings section. */
   private readAdapterKeyRef(
-    value: Record<string, unknown> | undefined,
+    section: Record<string, unknown> | undefined,
     entry: ConfigurableProviderView,
   ): string | undefined {
-    if (value === undefined) return undefined
-    if (entry.settingsPath.length === 0) {
-      const ref = value['apiKeyEnv']
-      return typeof ref === 'string' && ref.length > 0 ? ref : undefined
-    }
-    let current: unknown = value
-    for (const segment of entry.settingsPath) {
-      if (typeof current !== 'object' || current === null) return undefined
-      current = (current as Record<string, unknown>)[segment]
-    }
-    const ref = (current as Record<string, unknown>)?.['apiKeyEnv']
+    if (section === undefined) return undefined
+    const node = entry.settingsPath.length === 0
+      ? section
+      : getPath(section, entry.settingsPath)
+    if (typeof node !== 'object' || node === null) return undefined
+    const ref = (node as Record<string, unknown>).apiKeyEnv
     return typeof ref === 'string' && ref.length > 0 ? ref : undefined
   }
 
@@ -220,7 +251,11 @@ export class KeyRotationCardController {
     existing: SavedProfile | undefined,
     primaryRef: string | undefined,
   ): RotationProviderRow {
-    const keys = existing?.keys ?? []
+    // Drop any saved pool entry that duplicates the primary (a legacy profile
+    // whose head was `targetRef`): the card manages additional keys only.
+    const keys = existing === undefined
+      ? []
+      : existing.keys.filter((k) => k.ref !== primaryRef)
     return {
       provider: entry.provider, displayName: entry.displayName, active: entry.active,
       primaryRef, primaryConfigured: false,
@@ -235,7 +270,7 @@ export class KeyRotationCardController {
     for (const [provider, row] of this.rows) {
       const existing = this.readProfile(snapshot.value, provider)
       if (existing !== undefined) {
-        row.keys = existing.keys
+        row.keys = existing.keys.filter((k) => k.ref !== row.primaryRef)
         row.triggerCodes = existing.triggerCodes
       }
     }

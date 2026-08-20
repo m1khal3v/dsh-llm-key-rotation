@@ -42,6 +42,7 @@ export function apply(ctx: ClientContext): void {
   const controller = new KeyRotationCardController(
     ctx.settingsScope.bind({ namespace: NS }),
     api,
+    ctx.settingsScope,
   )
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
