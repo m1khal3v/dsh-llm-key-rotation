@@ -73,16 +73,12 @@ async function harness(
 ): Promise<{ ctx: Context; credentials: MockCredentialProvider; logs: Array<unknown[]> }> {
   const ctx = new Context()
   const logs: Array<unknown[]> = []
-  const originalInfo = ctx.logger.info.bind(ctx.logger)
-  const originalWarn = ctx.logger.warn.bind(ctx.logger)
-  ctx.logger.info = ((...args: unknown[]) => {
+  const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     logs.push(args)
-    return originalInfo(...args)
-  }) as typeof ctx.logger.info
-  ctx.logger.warn = ((...args: unknown[]) => {
+  })
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
     logs.push(args)
-    return originalWarn(...args)
-  }) as typeof ctx.logger.warn
+  })
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(MockCredentialProvider, { initial })
@@ -131,6 +127,7 @@ describe('llm-key-rotation', () => {
       await ctx.fiber.dispose()
       ctx = undefined
     }
+    vi.restoreAllMocks()
   })
 
   it('rotates from the primary to the first extra on a QUOTA failure and returns retry', async () => {

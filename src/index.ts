@@ -46,8 +46,10 @@
  * `RATE_LIMIT` from the provider profile's `retryPolicy.retryableCodes`.
  *
  * Every rotation, seed decision, cap, and cooldown is logged to stdout through
- * `ctx.logger` with a `[llm-key-rotation]` tag, so operation is confirmable by
- * watching the launching process's terminal. No key values are ever logged.
+ * `console.log`/`console.error` with a `[llm-key-rotation]` tag, so operation is
+ * confirmable by watching the launching process's terminal. No key values are
+ * ever logged. (`ctx.logger` is intentionally not used for these: in the dsh
+ * web build it only buffers and never prints to the terminal.)
  *
  * @module @m1khal3v/dsh-llm-key-rotation
  */
@@ -184,7 +186,7 @@ export function apply(ctx: Context, config: Config): void {
     const primary = await resolveRef(credentialRef(profile.targetRef))
     primaryValues.set(provider, primary)
     if (primary === undefined) {
-      ctx.logger.warn(
+      console.error(
         '[llm-key-rotation] provider "%s" primary key "%s" is not configured; '
           + 'configure it in the main settings (Models) before adding additional keys',
         provider, profile.targetRef,
@@ -218,16 +220,16 @@ export function apply(ctx: Context, config: Config): void {
     void (async () => {
       try {
         await ctx.credentials.set(credentialRef(profile.targetRef), primary)
-        ctx.logger.info(
+        console.log(
           '[llm-key-rotation] restored primary "%s" for provider "%s"; index→0',
           profile.targetRef, provider,
         )
       } catch (error: unknown) {
-        ctx.logger.warn(
+        console.error(
           '[llm-key-rotation] could not restore primary "%s" for provider "%s"',
           profile.targetRef, provider,
         )
-        ctx.logger.warn(error)
+        console.error(error)
       }
     })()
   }
@@ -293,7 +295,7 @@ export function apply(ctx: Context, config: Config): void {
     // Cooldown: refuse to rotate this provider and delegate.
     if (now < state.cooldownUntil) {
       const remainingMs = state.cooldownUntil - now
-      ctx.logger.warn(
+      console.error(
         '[llm-key-rotation] provider "%s" in cooldown (~%d ms remaining); delegating',
         provider, remainingMs,
       )
@@ -309,12 +311,12 @@ export function apply(ctx: Context, config: Config): void {
       // reach llm-retry's own recovery path.
       if (profile.cooldownMs !== undefined && profile.cooldownMs > 0) {
         state.cooldownUntil = now + profile.cooldownMs
-        ctx.logger.warn(
+        console.error(
           '[llm-key-rotation] provider "%s" exhausted after %d rotation(s); entering cooldown %d ms and delegating',
           provider, state.rotatedSinceSuccess, profile.cooldownMs,
         )
       } else {
-        ctx.logger.warn(
+        console.error(
           '[llm-key-rotation] provider "%s" exhausted after %d rotation(s); delegating',
           provider, state.rotatedSinceSuccess,
         )
@@ -328,7 +330,7 @@ export function apply(ctx: Context, config: Config): void {
     const toRef = extras[toIndex]!
     const value = poolCaches.get(provider)?.get(toIndex)
     if (value === undefined) {
-      ctx.logger.warn(
+      console.error(
         '[llm-key-rotation] pool ref "%s" for provider "%s" has no stored value; delegating',
         toRef, provider,
       )
@@ -337,11 +339,11 @@ export function apply(ctx: Context, config: Config): void {
     try {
       await ctx.credentials.set(credentialRef(profile.targetRef), value)
     } catch (error: unknown) {
-      ctx.logger.warn(
+      console.error(
         '[llm-key-rotation] could not write rotated key to "%s" for provider "%s"; delegating',
         profile.targetRef, provider,
       )
-      ctx.logger.warn(error)
+      console.error(error)
       return undefined
     }
     if (fused.aborted) return undefined
@@ -357,7 +359,7 @@ export function apply(ctx: Context, config: Config): void {
       targetRef: profile.targetRef,
       failure,
     }
-    ctx.logger.info(
+    console.log(
       '[llm-key-rotation] rotated provider="%s" "%s"→"%s" (%s) retry=%d rotationId=%s',
       provider, fromRef, toRef, failure.code, state.rotatedSinceSuccess, state.rotationId,
     )
@@ -382,8 +384,8 @@ export function apply(ctx: Context, config: Config): void {
       .then((action) => action ?? next())
       .catch((error: unknown) => {
         // A rotation failure must never break the recovery waterfall; delegate.
-        ctx.logger.warn('llm-key-rotation: rotation for provider "%s" failed; delegating', provider)
-        ctx.logger.warn(error)
+        console.error('llm-key-rotation: rotation for provider "%s" failed; delegating', provider)
+        console.error(error)
         return next()
       })
     state.chain = result.then(() => undefined, () => undefined)
