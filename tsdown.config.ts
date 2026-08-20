@@ -7,6 +7,9 @@ import { defineConfig } from 'tsdown'
 // the build sandbox. `build` (dev / npm publish) additionally emits .d.ts via
 // tsc. Every @deepseek-ai/* import stays external and resolves from the host
 // dsh installation at runtime, so no harness code is bundled here.
+//
+// Output keeps `.js` extensions (not `.mjs`) because package.json declares
+// `"type": "module"`, making `.js` already ESM — matching the dsh convention.
 export default defineConfig({
   entry: ['src/index.ts', 'src/invariant.ts'],
   format: 'esm',
@@ -16,5 +19,8 @@ export default defineConfig({
   sourcemap: false,
   target: 'node22',
   platform: 'node',
-  external: [/^@deepseek-ai\//],
+  deps: {
+    neverBundle: [/^@deepseek-ai\//, /^node:/],
+  },
+  outExtensions: () => ({ js: '.js' }),
 })

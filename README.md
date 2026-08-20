@@ -44,17 +44,55 @@ model request fails (QUOTA / RATE_LIMIT / AUTH)
 
 ## Quick Start
 
-Prerequisites: the official `dsh` CLI (`@deepseek-ai/dsh`) and at least two API
-keys stored as separate credential references.
+Prerequisites: at least two API keys for the same provider, stored as separate
+credential references.
+
+### Install the plugin
+
+The `dsh` CLI is required. It comes from the `@deepseek-ai/dsh` package, which
+you may have installed globally or run from a source checkout. Both paths are
+shown below — pick the one that matches your setup.
+
+**Case A — `dsh` installed globally** (`npm install -g @deepseek-ai/dsh`):
 
 ```sh
-# Install the plugin into your profile
+# From npm (prebuilt lib/, no build permission needed)
 dsh plugin --profile web add @m1khal3v/dsh-llm-key-rotation
 
-# Or install from GitHub
+# Or from GitHub (runs the prepare build script at install time; pnpm >=10
+# asks you to allow it — see "Installing from GitHub" below)
 dsh plugin --profile web add github:m1khal3v/dsh-llm-key-rotation
 
-# Then boot
+# Or from a local tarball (no network)
+npm pack   # in the plugin directory, produces a .tgz
+dsh plugin --profile web add ./m1khal3v-dsh-llm-key-rotation-0.1.0.tgz
+```
+
+**Case B — running `dsh` from a source checkout** (the `deepseek-harness`
+repository cloned locally):
+
+```sh
+cd /path/to/deepseek-harness
+
+# Prefix every dsh command with pnpm
+pnpm dsh plugin --profile web add @m1khal3v/dsh-llm-key-rotation
+
+pnpm dsh --profile web --dump-config   # verify the plugin row appears
+pnpm dsh --profile web                  # boot
+```
+
+**Case C — no `dsh` CLI yet.** Install it first:
+
+```sh
+npm install -g @deepseek-ai/dsh
+dsh --version   # confirm
+```
+
+Then follow Case A above.
+
+### Boot and configure
+
+```sh
 dsh --profile web
 ```
 
@@ -80,6 +118,30 @@ llm-key-rotation:
 Store the key values as credentials (through the web Models page or the
 credentials API). The plugin reads only references, never values — secrets stay
 in the credential store.
+
+### Installing from GitHub
+
+A git install fetches sources, not built artifacts, so pnpm runs the package's
+`prepare` script to build `lib/` at install time. pnpm ≥10 refuses to run a git
+dependency's build script until you allow it. The first `add` fails; `dsh`
+points at the fix — copy the exact package key pnpm printed into the profile's
+`pnpm-workspace.yaml`:
+
+```yaml
+# $DSH_HOME/profiles/web/pnpm-workspace.yaml
+allowBuilds:
+  '@m1khal3v/dsh-llm-key-rotation': true
+```
+
+Then re-run `dsh plugin --profile web add github:m1khal3v/dsh-llm-key-rotation`.
+
+Treat that allowance as what it is: permission to execute the package's code on
+your machine at install time. Only allow packages whose source you trust, and
+pin a commit (`github:m1khal3v/dsh-llm-key-rotation#<sha>`) so a later push
+cannot silently change what runs.
+
+Installing from npm or a tarball needs no build permission — the published
+tarball already carries prebuilt `lib/`.
 
 ## Configuration
 
