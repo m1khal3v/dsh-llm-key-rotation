@@ -1,0 +1,396 @@
+/* Key Rotation card — premium UI styling.
+   Uses --dsw-* tokens from the dsh theme where possible. */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--dsw-surface, #1a1a2e);
+  border: 1px solid var(--dsw-border, rgba(255,255,255,0.08));
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--dsw-text-primary, #e0e0e0);
+}
+
+.description {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-text-secondary, #888);
+}
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider {
+  border-radius: 8px;
+  border: 1px solid var(--dsw-border, rgba(255,255,255,0.06));
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.providerOn {
+  border-color: var(--dsw-accent, #4b6fff);
+}
+
+.providerHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+}
+
+.providerHeader:hover {
+  background: rgba(255,255,255,0.03);
+}
+
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switchSlider {
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--dsw-surface-hover, rgba(255,255,255,0.12));
+  transition: background 0.2s;
+  position: relative;
+}
+
+.switchSlider::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #999;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.switch input:checked + .switchSlider {
+  background: var(--dsw-accent, #4b6fff);
+}
+
+.switch input:checked + .switchSlider::before {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+.providerName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--dsw-text-primary, #e0e0e0);
+  flex: 1;
+}
+
+.tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tagActive {
+  background: rgba(75,111,255,0.15);
+  color: var(--dsw-accent, #4b6fff);
+}
+
+.tagInactive {
+  background: rgba(255,255,255,0.06);
+  color: var(--dsw-text-secondary, #888);
+}
+
+.keyCount {
+  font-size: 12px;
+  color: var(--dsw-text-secondary, #888);
+  white-space: nowrap;
+}
+
+.chevron {
+  font-size: 12px;
+  color: var(--dsw-text-secondary, #888);
+  transition: transform 0.15s;
+}
+
+.chevronOpen {
+  transform: rotate(90deg);
+}
+
+.providerBody {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.keyChain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chainLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-text-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.keyRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.keyPosition {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-text-secondary, #888);
+  width: 24px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.keyControls {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.iconBtn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  color: var(--dsw-text-secondary, #888);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+
+.iconBtn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+  color: var(--dsw-text-primary, #e0e0e0);
+}
+
+.iconBtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.iconBtnRemove:hover:not(:disabled) {
+  background: rgba(255,68,68,0.15);
+  color: #f44;
+}
+
+.iconBtnReveal {
+  font-size: 14px;
+}
+
+.keyInput {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-border, rgba(255,255,255,0.1));
+  background: var(--dsw-input-bg, rgba(0,0,0,0.2));
+  color: var(--dsw-text-primary, #e0e0e0);
+  font-size: 13px;
+  font-family: monospace;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.keyInput:focus {
+  border-color: var(--dsw-accent, #4b6fff);
+}
+
+.keyInput::placeholder {
+  color: var(--dsw-text-secondary, #666);
+}
+
+.btn {
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  transition: background 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btnPrimary {
+  background: var(--dsw-accent, #4b6fff);
+  color: #fff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--dsw-accent-hover, #5d7eff);
+}
+
+.btnStore {
+  background: var(--dsw-surface-hover, rgba(255,255,255,0.08));
+  color: var(--dsw-text-primary, #e0e0e0);
+}
+
+.btnStore:hover:not(:disabled) {
+  background: rgba(255,255,255,0.12);
+}
+
+.btnAdd {
+  background: none;
+  border: 1px dashed var(--dsw-border, rgba(255,255,255,0.12));
+  color: var(--dsw-text-secondary, #888);
+  padding: 8px;
+  text-align: center;
+}
+
+.btnAdd:hover {
+  border-color: var(--dsw-accent, #4b6fff);
+  color: var(--dsw-accent, #4b6fff);
+}
+
+.keyStatus {
+  font-size: 12px;
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+.statusOk {
+  color: var(--dsw-success, #4caf50);
+}
+
+.statusErr {
+  color: var(--dsw-error, #f44);
+}
+
+.statusEmpty {
+  color: var(--dsw-text-secondary, #666);
+}
+
+.triggers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.triggerChips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  padding: 5px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--dsw-border, rgba(255,255,255,0.1));
+  background: none;
+  color: var(--dsw-text-secondary, #888);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.chip:hover {
+  border-color: var(--dsw-text-secondary, #888);
+}
+
+.chipOn {
+  background: rgba(75,111,255,0.12);
+  border-color: var(--dsw-accent, #4b6fff);
+  color: var(--dsw-accent, #4b6fff);
+}
+
+.exhausted {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.radioGroup {
+  display: flex;
+  gap: 16px;
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--dsw-text-primary, #e0e0e0);
+}
+
+.radio input {
+  accent-color: var(--dsw-accent, #4b6fff);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.badge {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.badgeErr {
+  background: rgba(244,68,68,0.12);
+  color: var(--dsw-error, #f44);
+}
+
+.errorBanner {
+  padding: 14px;
+  border-radius: 8px;
+  background: rgba(244,68,68,0.08);
+  border: 1px solid rgba(244,68,68,0.2);
+  color: var(--dsw-error, #f44);
+  font-size: 13px;
+}

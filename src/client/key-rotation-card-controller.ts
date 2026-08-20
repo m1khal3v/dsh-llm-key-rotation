@@ -1,318 +1,365 @@
 /**
- * Controller for the key-rotation settings card. Bridges the `llm-key-rotation`
- * settings namespace onto a YAML-editor form and manages credential writes
- * through the wire API.
+ * Controller for the key-rotation settings card.
+ *
+ * Reads the configurable-provider directory (llm.providers wire API) to show
+ * already-configured providers as pickable rows. For each provider, the user
+ * adds API keys directly (values, not env-var names); the controller derives
+ * credential references automatically (PROVIDER_API_KEY, _2, _3, …), stores
+ * the key values through the credentials wire API, and writes the rotation
+ * profile through the settings wire API.
  */
 
 import type { SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import type { IApiClient, CredentialView } from '@deepseek-ai/dsh-api-remotes/client'
+import type { IApiClient, CredentialView, ConfigurableProviderView } from '@deepseek-ai/dsh-api-remotes/client'
 
-/** One credential reference extracted from the profiles YAML. */
-export interface CredentialRow {
-  /** Credential reference name (e.g. `OPENCODE_API_KEY_2`). */
+/** Derive the conventional credential reference for a provider route. */
+function deriveKeyRef(provider: string, index: number): string {
+  const base = provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  return index === 0 ? `${base}_API_KEY` : `${base}_API_KEY_${index + 1}`
+}
+
+/** One key in the rotation chain. */
+export interface KeyEntry {
+  /** Stable client-side id for React keys. */
+  id: string
+  /** The credential reference derived from the provider + position. */
   ref: string
-  /** Current credential state from the Host. */
-  view: CredentialView | undefined
-  /** Draft key value the user typed; blank until typed. */
-  draft: string
-  /** Whether a store is crossing the wire. */
-  storing: boolean
-  /** Whether the last store succeeded. */
+  /** The key value the user typed (write-only; never read back). */
+  value: string
+  /** Whether this key is stored in the credential store. */
   stored: boolean
+  /** Whether a store is in flight. */
+  storing: boolean
+  /** Whether the last store failed. */
+  failed: boolean
+  /** Credential state from the Host. */
+  view: CredentialView | undefined
+}
+
+/** One provider row with its rotation configuration. */
+export interface RotationProviderRow {
+  /** Provider route id. */
+  provider: string
+  /** Display name from the directory. */
+  displayName: string
+  /** Whether this provider is active (has a registered adapter). */
+  active: boolean
+  /** The credential reference the adapter resolves (its apiKeyEnv), when known. */
+  adapterKeyRef: string | undefined
+  /** Whether rotation is enabled for this provider. */
+  enabled: boolean
+  /** Ordered key entries the user typed. */
+  keys: KeyEntry[]
+  /** Trigger codes for rotation. */
+  triggerCodes: string[]
+  /** Behavior when pool is exhausted. */
+  onExhausted: 'delegate' | 'cycle'
 }
 
 /** Card state the React component renders. */
 export interface KeyRotationCardState {
-  /** False while the namespace is not served; the card renders nothing. */
+  /** False while the provider directory is loading. */
   available: boolean
   /** Whether the Host document accepts writes. */
   writable: boolean
-  /** YAML draft text the editor renders. */
-  yamlText: string
-  /** Whether the YAML draft parses without error. */
-  yamlValid: boolean
-  /** YAML parse error message, when invalid. */
-  yamlError: string | undefined
-  /** Whether a save is crossing the wire. */
+  /** Provider rows from the directory, joined with rotation config. */
+  providers: readonly RotationProviderRow[]
+  /** Whether a settings save is in flight. */
   saving: boolean
   /** Whether the last save did not land. */
   failed: boolean
-  /** Credential rows derived from the current profiles. */
-  credentials: readonly CredentialRow[]
+  /** Load error message. */
+  error: string | null
 }
 
 /** The face the card's slot registration injects. */
 export interface KeyRotationCardFace {
   hooks: {
-    /** Card snapshot bound by the renderer as useKeyRotationCard. */
     keyRotationCard: SnapshotStore<KeyRotationCardState>
   }
-  /** Stage YAML draft text. */
-  editYaml: (text: string) => void
-  /** Stage a credential draft for one ref. */
-  editCredential: (ref: string, value: string) => void
-  /** Write the YAML draft to the Host settings document. */
+  toggleProvider: (provider: string, enabled: boolean) => void
+  addKey: (provider: string) => void
+  removeKey: (provider: string, keyId: string) => void
+  editKey: (provider: string, keyId: string, value: string) => void
+  moveKey: (provider: string, keyId: string, direction: 'up' | 'down') => void
+  toggleTrigger: (provider: string, code: string) => void
+  setOnExhausted: (provider: string, value: 'delegate' | 'cycle') => void
+  storeKey: (provider: string, keyId: string) => void
   save: () => void
-  /** Discard YAML edits. */
-  discard: () => void
-  /** Store one credential value through the wire API. */
-  storeCredential: (ref: string) => void
 }
 
-/** Parse a YAML string into a providers map, returning undefined on failure. */
-function parseProviders(text: string): Record<string, unknown> | undefined {
-  try {
-    // Dynamic import would be ideal, but the browser bundle must stay self-contained.
-    // A minimal YAML parser inline avoids a heavy dependency.
-    const result = simpleYamlParse(text)
-    if (typeof result !== 'object' || result === null || Array.isArray(result)) return undefined
-    return result as Record<string, unknown>
-  } catch {
-    return undefined
-  }
-}
+let keyIdCounter = 0
+function newKeyId(): string { return `key-${++keyIdCounter}` }
 
-/** Extract all credential references from a providers map. */
-function extractRefs(providers: Record<string, unknown>): string[] {
-  const refs = new Set<string>()
-  for (const profile of Object.values(providers)) {
-    if (typeof profile !== 'object' || profile === null) continue
-    const p = profile as Record<string, unknown>
-    const target = p['targetRef']
-    if (typeof target === 'string' && target.length > 0) refs.add(target)
-    const pool = p['poolRefs']
-    if (Array.isArray(pool)) {
-      for (const ref of pool) {
-        if (typeof ref === 'string' && ref.length > 0) refs.add(ref)
-      }
-    }
-  }
-  return [...refs].sort()
+const DEFAULT_TRIGGERS = ['QUOTA', 'RATE_LIMIT', 'AUTH']
+
+/** Saved rotation profile shape read from the settings namespace. */
+interface SavedProfile {
+  keys: KeyEntry[]
+  triggerCodes: string[]
+  onExhausted: 'delegate' | 'cycle'
+  enabled: boolean
 }
 
 /**
- * A minimal YAML subset parser sufficient for the `providers` map shape:
- * nested mappings, sequences of strings, and scalar values. It is NOT a
- * general YAML parser — it handles the key-rotation config format only.
- */
-function simpleYamlParse(text: string): unknown {
-  const lines = text.split('\n')
-  return parseBlock(lines, 0, 0).value
-}
-
-interface ParseResult {
-  value: unknown
-  consumed: number
-}
-
-function parseBlock(lines: string[], start: number, indent: number): ParseResult {
-  const map: Record<string, unknown> = {}
-  let i = start
-  while (i < lines.length) {
-    const line = lines[i]!
-    const trimmed = line.trim()
-    if (trimmed === '' || trimmed.startsWith('#')) { i++; continue }
-    const lineIndent = line.length - line.trimStart().length
-    if (lineIndent < indent) break
-    if (lineIndent > indent) { i++; continue }
-    if (trimmed.startsWith('- ')) {
-      // Sequence at this indent level
-      const seq: unknown[] = []
-      while (i < lines.length) {
-        const seqLine = lines[i]!
-        const seqTrimmed = seqLine.trim()
-        if (seqTrimmed === '' || seqTrimmed.startsWith('#')) { i++; continue }
-        const seqIndent = seqLine.length - seqLine.trimStart().length
-        if (seqIndent < indent) break
-        if (seqIndent > indent) { i++; continue }
-        if (!seqTrimmed.startsWith('- ')) break
-        seq.push(seqTrimmed.slice(2).trim())
-        i++
-      }
-      return { value: seq, consumed: i - start }
-    }
-    const colonIdx = trimmed.indexOf(':')
-    if (colonIdx < 0) { i++; continue }
-    const key = trimmed.slice(0, colonIdx).trim()
-    const rest = trimmed.slice(colonIdx + 1).trim()
-    if (rest === '') {
-      // Nested block
-      const nested = parseBlock(lines, i + 1, indent + 2)
-      map[key] = nested.value
-      i += 1 + nested.consumed
-    } else {
-      map[key] = rest
-      i++
-    }
-  }
-  return { value: map, consumed: i - start }
-}
-
-/**
- * Bridges the `llm-key-rotation` scope onto the card's YAML-editor form and
- * manages credential writes through the wire API.
+ * Bridges the configurable-provider directory and the `llm-key-rotation`
+ * settings namespace onto a premium card form with direct key input.
  */
 export class KeyRotationCardController {
   private readonly store: SnapshotStore<KeyRotationCardState>
-  private yamlDraft: string | undefined
-  private credentialDrafts = new Map<string, string>()
-  private credentialStoring = new Set<string>()
-  private credentialStored = new Set<string>()
-  private credentialViews = new Map<string, CredentialView>()
+  private rows = new Map<string, RotationProviderRow>()
   private saving = false
   private failed = false
 
   /**
    * @param scope - the bound settings scope for the `llm-key-rotation` namespace.
-   * @param api - the wire API client for credential reads/writes.
+   * @param api - the wire API client.
    */
   constructor(
     private readonly scope: SettingsScope<Record<string, unknown>>,
     private readonly api: IApiClient,
   ) {
-    this.store = createSnapshotStore(this.projection())
-    this.scope.subscribe(() => {
-      this.refreshCredentials()
-      this.store.set(this.projection())
-    })
-    void this.refreshCredentials()
+    this.store = createSnapshotStore(this.initialState())
+    this.scope.subscribe(() => { void this.syncFromSettings() })
+    void this.loadProviders()
   }
 
-  /** Refresh credential views for all refs in the current profiles. */
+  private initialState(): KeyRotationCardState {
+    return { available: false, writable: false, providers: [], saving: false, failed: false, error: null }
+  }
+
+  /** Load the provider directory from the Host. */
+  private async loadProviders(): Promise<void> {
+    try {
+      const response = await this.api.llm.providers({})
+      if (!response.result.ok) throw new Error(response.result.error.message)
+      const snapshot = this.scope.getSnapshot()
+      this.rows.clear()
+      for (const entry of response.result.value.providers) {
+        const existing = this.readProfile(snapshot.value, entry.provider)
+        const adapterRef = this.readAdapterKeyRef(snapshot.value, entry)
+        this.rows.set(entry.provider, this.buildRow(entry, existing, adapterRef))
+      }
+      void this.refreshCredentials()
+      this.publish()
+    } catch (error) {
+      this.store.set({
+        ...this.initialState(),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  /** Refresh credential views for all refs in current rows. */
   private async refreshCredentials(): Promise<void> {
-    const snapshot = this.scope.getSnapshot()
-    const providers = snapshot.value?.['providers']
-    if (typeof providers !== 'object' || providers === null) return
-    const refs = extractRefs(providers as Record<string, unknown>)
-    if (refs.length === 0) return
+    const refs: string[] = []
+    for (const row of this.rows.values()) {
+      for (const key of row.keys) refs.push(key.ref)
+    }
+    if (refs.length === 0) { this.publish(); return }
     try {
       const response = await this.api.credentials.describe({ refs })
       if (response.result.ok) {
-        for (const [ref, view] of Object.entries(response.result.value.credentials)) {
-          this.credentialViews.set(ref, view)
+        const views = response.result.value.credentials
+        for (const row of this.rows.values()) {
+          for (const key of row.keys) {
+            key.view = views[key.ref]
+            key.stored = views[key.ref]?.configured ?? false
+          }
         }
       }
-    } catch {
-      // Credential enrichment is best-effort; the card still works without it.
-    }
-    this.store.set(this.projection())
+    } catch { /* best-effort enrichment */ }
+    this.publish()
   }
 
-  private projection(): KeyRotationCardState {
-    const snapshot = this.scope.getSnapshot()
-    const providers = snapshot.value?.['providers']
-    const baseYaml = typeof providers === 'object' && providers !== null
-      ? yamlStringify(providers as Record<string, unknown>)
-      : ''
-    const yamlText = this.yamlDraft ?? baseYaml
-    const parsed = parseProviders(yamlText)
-    const refs = parsed ? extractRefs(parsed) : []
-    const credentials: CredentialRow[] = refs.map(ref => ({
-      ref,
-      view: this.credentialViews.get(ref),
-      draft: this.credentialDrafts.get(ref) ?? '',
-      storing: this.credentialStoring.has(ref),
-      stored: this.credentialStored.has(ref),
+  /** Read a saved rotation profile from the settings section value. */
+  private readProfile(value: Record<string, unknown> | undefined, provider: string): SavedProfile | undefined {
+    const providers = value?.['providers'] as Record<string, unknown> | undefined
+    if (providers === undefined) return undefined
+    const profile = providers[provider] as Record<string, unknown> | undefined
+    if (profile === undefined) return undefined
+    const poolRefs = profile['poolRefs'] as string[] | undefined
+    const keys: KeyEntry[] = (poolRefs ?? []).map((ref) => ({
+      id: newKeyId(), ref, value: '', stored: false, storing: false, failed: false, view: undefined,
     }))
     return {
+      keys,
+      triggerCodes: (profile['triggerCodes'] as string[]) ?? [...DEFAULT_TRIGGERS],
+      onExhausted: (profile['onExhausted'] as 'delegate' | 'cycle') ?? 'delegate',
+      enabled: true,
+    }
+  }
+
+  /** Read the adapter's apiKeyEnv from the settings section for a provider. */
+  private readAdapterKeyRef(
+    value: Record<string, unknown> | undefined,
+    entry: ConfigurableProviderView,
+  ): string | undefined {
+    if (value === undefined) return undefined
+    if (entry.settingsPath.length === 0) {
+      const ref = value['apiKeyEnv']
+      return typeof ref === 'string' && ref.length > 0 ? ref : undefined
+    }
+    let current: unknown = value
+    for (const segment of entry.settingsPath) {
+      if (typeof current !== 'object' || current === null) return undefined
+      current = (current as Record<string, unknown>)[segment]
+    }
+    const ref = (current as Record<string, unknown>)?.['apiKeyEnv']
+    return typeof ref === 'string' && ref.length > 0 ? ref : undefined
+  }
+
+  /** Build a provider row from the directory entry and any saved profile. */
+  private buildRow(
+    entry: ConfigurableProviderView,
+    existing: SavedProfile | undefined,
+    adapterRef: string | undefined,
+  ): RotationProviderRow {
+    if (existing !== undefined) {
+      return {
+        provider: entry.provider, displayName: entry.displayName, active: entry.active,
+        adapterKeyRef: adapterRef, enabled: existing.enabled, keys: existing.keys,
+        triggerCodes: existing.triggerCodes, onExhausted: existing.onExhausted,
+      }
+    }
+    return {
+      provider: entry.provider, displayName: entry.displayName, active: entry.active,
+      adapterKeyRef: adapterRef, enabled: false,
+      keys: [{ id: newKeyId(), ref: adapterRef ?? deriveKeyRef(entry.provider, 0), value: '', stored: false, storing: false, failed: false, view: undefined }],
+      triggerCodes: [...DEFAULT_TRIGGERS], onExhausted: 'delegate',
+    }
+  }
+
+  /** Re-sync rows after a settings change. */
+  private syncFromSettings(): void {
+    const snapshot = this.scope.getSnapshot()
+    for (const [provider, row] of this.rows) {
+      const existing = this.readProfile(snapshot.value, provider)
+      if (existing !== undefined && !row.enabled) {
+        row.enabled = existing.enabled
+        row.keys = existing.keys
+        row.triggerCodes = existing.triggerCodes
+        row.onExhausted = existing.onExhausted
+      }
+    }
+    void this.refreshCredentials()
+    this.publish()
+  }
+
+  private publish(): void {
+    const snapshot = this.scope.getSnapshot()
+    this.store.set({
       available: snapshot.status === 'ready',
       writable: snapshot.writable,
-      yamlText,
-      yamlValid: parsed !== undefined,
-      yamlError: parsed === undefined ? 'Invalid YAML structure' : undefined,
+      providers: [...this.rows.values()],
       saving: this.saving,
       failed: this.failed,
-      credentials,
-    }
+      error: null,
+    })
   }
 
   /** Build the face the card's slot registration injects. */
   inject(): KeyRotationCardFace {
     return {
       hooks: { keyRotationCard: this.store },
-      editYaml: (text) => {
-        this.yamlDraft = text
-        this.failed = false
-        this.store.set(this.projection())
+      toggleProvider: (provider, enabled) => {
+        const row = this.rows.get(provider)
+        if (row !== undefined) { row.enabled = enabled; this.publish() }
       },
-      editCredential: (ref, value) => {
-        this.credentialDrafts.set(ref, value)
-        this.credentialStored.delete(ref)
-        this.store.set(this.projection())
+      addKey: (provider) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        let suffix = row.keys.length
+        while (row.keys.some(k => k.ref === deriveKeyRef(provider, suffix))) suffix++
+        row.keys.push({
+          id: newKeyId(), ref: deriveKeyRef(provider, suffix), value: '',
+          stored: false, storing: false, failed: false, view: undefined,
+        })
+        this.publish()
       },
+      removeKey: (provider, keyId) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        if (row.keys.length <= 1) return
+        row.keys = row.keys.filter(k => k.id !== keyId)
+        row.keys.forEach((key, i) => { key.ref = deriveKeyRef(provider, i) })
+        this.publish()
+      },
+      editKey: (provider, keyId, value) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        const key = row.keys.find(k => k.id === keyId)
+        if (key !== undefined) { key.value = value; key.failed = false; this.publish() }
+      },
+      moveKey: (provider, keyId, direction) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        const index = row.keys.findIndex(k => k.id === keyId)
+        if (index < 0) return
+        const target = direction === 'up' ? index - 1 : index + 1
+        if (target < 0 || target >= row.keys.length) return
+        ;[row.keys[index]!, row.keys[target]!] = [row.keys[target]!, row.keys[index]!]
+        row.keys.forEach((key, i) => { key.ref = deriveKeyRef(provider, i) })
+        this.publish()
+      },
+      toggleTrigger: (provider, code) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        const idx = row.triggerCodes.indexOf(code)
+        if (idx >= 0) row.triggerCodes = row.triggerCodes.filter(c => c !== code)
+        else row.triggerCodes = [...row.triggerCodes, code]
+        this.publish()
+      },
+      setOnExhausted: (provider, value) => {
+        const row = this.rows.get(provider)
+        if (row !== undefined) { row.onExhausted = value; this.publish() }
+      },
+      storeKey: (provider, keyId) => { void this.storeKey(provider, keyId) },
       save: () => { void this.save() },
-      discard: () => {
-        this.yamlDraft = undefined
-        this.failed = false
-        this.store.set(this.projection())
-      },
-      storeCredential: (ref) => { void this.storeCredential(ref) },
     }
   }
 
+  private async storeKey(provider: string, keyId: string): Promise<void> {
+    const row = this.rows.get(provider)
+    if (row === undefined) return
+    const key = row.keys.find(k => k.id === keyId)
+    if (key === undefined || key.value.trim() === '') return
+    key.storing = true
+    key.failed = false
+    this.publish()
+    try {
+      await this.api.credentials.set({ ref: key.ref, value: key.value.trim() })
+      key.stored = true
+      key.value = ''
+    } catch {
+      key.failed = true
+    }
+    key.storing = false
+    this.publish()
+    void this.refreshCredentials()
+  }
+
   private async save(): Promise<void> {
-    const text = this.yamlDraft
-    if (text === undefined || this.saving) return
-    const parsed = parseProviders(text)
-    if (parsed === undefined) return
+    const profiles: Record<string, unknown> = {}
+    for (const [provider, row] of this.rows) {
+      if (!row.enabled || row.keys.length === 0) continue
+      profiles[provider] = {
+        targetRef: row.adapterKeyRef ?? deriveKeyRef(row.provider, 0),
+        poolRefs: row.keys.map(k => k.ref),
+        triggerCodes: row.triggerCodes,
+        onExhausted: row.onExhausted,
+      }
+    }
     this.saving = true
     this.failed = false
-    this.store.set(this.projection())
+    this.publish()
     try {
-      await this.scope.set('providers', parsed)
-      this.yamlDraft = undefined
+      await this.scope.set('providers', profiles)
     } catch {
       this.failed = true
     }
     this.saving = false
-    this.store.set(this.projection())
-    void this.refreshCredentials()
+    this.publish()
   }
-
-  private async storeCredential(ref: string): Promise<void> {
-    const value = this.credentialDrafts.get(ref)?.trim()
-    if (value === undefined || value === '') return
-    this.credentialStoring.add(ref)
-    this.credentialStored.delete(ref)
-    this.store.set(this.projection())
-    try {
-      await this.api.credentials.set({ ref, value })
-      this.credentialDrafts.set(ref, '')
-      this.credentialStored.add(ref)
-    } catch {
-      // Store failure is surfaced per-row; the card stays usable.
-    }
-    this.credentialStoring.delete(ref)
-    this.store.set(this.projection())
-    void this.refreshCredentials()
-  }
-}
-
-/** Serialize a providers map back to YAML text (minimal serializer). */
-function yamlStringify(value: Record<string, unknown>): string {
-  const lines: string[] = []
-  for (const [key, val] of Object.entries(value)) {
-    if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
-      lines.push(`${key}:`)
-      for (const [innerKey, innerVal] of Object.entries(val as Record<string, unknown>)) {
-        if (Array.isArray(innerVal)) {
-          lines.push(`  ${innerKey}:`)
-          for (const item of innerVal) {
-            lines.push(`    - ${String(item)}`)
-          }
-        } else {
-          lines.push(`  ${innerKey}: ${String(innerVal)}`)
-        }
-      }
-    } else if (Array.isArray(val)) {
-      lines.push(`${key}:`)
-      for (const item of val) {
-        lines.push(`  - ${String(item)}`)
-      }
-    } else {
-      lines.push(`${key}: ${String(val)}`)
-    }
-  }
-  return lines.join('\n')
 }
