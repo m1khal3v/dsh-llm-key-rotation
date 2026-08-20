@@ -116,7 +116,7 @@
 }
 
 .providerBody {
-  padding: 0 14px 14px;
+  padding: 12px 14px 14px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -258,7 +258,7 @@
 
 .btnPrimary {
   background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-button-contrast-fill);
+  color: var(--dsw-alias-label-primary-foreground);
   flex: 1;
 }
 
@@ -267,8 +267,7 @@
 }
 
 .btnPrimary:disabled {
-  background: var(--dsw-alias-button-primary-dimmed);
-  color: var(--dsw-alias-label-secondary);
+  opacity: 0.5;
 }
 
 .btnAdd {
