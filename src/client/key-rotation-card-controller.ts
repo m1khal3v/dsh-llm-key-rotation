@@ -1,25 +1,31 @@
 /**
  * Controller for the key-rotation settings card.
  *
+ * The card manages **only additional keys** on top of a provider's primary key.
+ * The primary key (the adapter's `apiKeyEnv`) is configured through the harness
+ * main settings (Models) and is never edited here. If the primary is not
+ * configured, the card shows a gate message instead of the key editor.
+ *
  * Reads the configurable-provider directory (llm.providers wire API) to show
- * already-configured providers as pickable rows. For each provider, the user
- * adds API keys directly (values, not env-var names); the controller derives
- * credential references automatically (PROVIDER_API_KEY, _2, _3, …), stores
- * the key values through the credentials wire API, and writes the rotation
- * profile through the settings wire API.
+ * already-configured providers as pickable rows. For each provider the user
+ * adds/adjusts additional keys (values, not env-var names); the controller
+ * derives their credential references automatically (PROVIDER_API_KEY_2, _3,
+ * …), stores key values through the credentials wire API, and writes the
+ * rotation profile through the settings wire API. Saving is automatic: every
+ * store/remove/reorder persists the profile, so there is no Save button.
  */
 
 import type { SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type { IApiClient, CredentialView, ConfigurableProviderView } from '@deepseek-ai/dsh-api-remotes/client'
 
-/** Derive the conventional credential reference for a provider route. */
-function deriveKeyRef(provider: string, index: number): string {
+/** Derive the conventional additional-key credential reference for a provider route. */
+function deriveExtraKeyRef(provider: string, index: number): string {
   const base = provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-  return index === 0 ? `${base}_API_KEY` : `${base}_API_KEY_${index + 1}`
+  return `${base}_API_KEY_${index + 2}`
 }
 
-/** One key in the rotation chain. */
+/** One additional key in the rotation chain. */
 export interface KeyEntry {
   /** Stable client-side id for React keys. */
   id: string
@@ -27,14 +33,14 @@ export interface KeyEntry {
   ref: string
   /** The key value the user typed (write-only; never read back). */
   value: string
-  /** Whether this key is stored in the credential store. */
+  /** Whether a durable value exists for this ref (from credential describe). */
+  filled: boolean
+  /** Whether this key was stored in the current session (transient green checkmark). */
   stored: boolean
   /** Whether a store is in flight. */
   storing: boolean
   /** Whether the last store failed. */
   failed: boolean
-  /** Credential state from the Host. */
-  view: CredentialView | undefined
 }
 
 /** One provider row with its rotation configuration. */
@@ -45,16 +51,14 @@ export interface RotationProviderRow {
   displayName: string
   /** Whether this provider is active (has a registered adapter). */
   active: boolean
-  /** The credential reference the adapter resolves (its apiKeyEnv), when known. */
-  adapterKeyRef: string | undefined
-  /** Whether rotation is enabled for this provider. */
-  enabled: boolean
-  /** Ordered key entries the user typed. */
+  /** The primary credential reference the adapter resolves (its apiKeyEnv). */
+  primaryRef: string | undefined
+  /** Whether the primary key is configured in the main settings. */
+  primaryConfigured: boolean
+  /** Ordered additional keys the user manages. */
   keys: KeyEntry[]
   /** Trigger codes for rotation. */
   triggerCodes: string[]
-  /** Behavior when pool is exhausted. */
-  onExhausted: 'delegate' | 'cycle'
 }
 
 /** Card state the React component renders. */
@@ -65,9 +69,9 @@ export interface KeyRotationCardState {
   writable: boolean
   /** Provider rows from the directory, joined with rotation config. */
   providers: readonly RotationProviderRow[]
-  /** Whether a settings save is in flight. */
+  /** Whether a settings write is in flight. */
   saving: boolean
-  /** Whether the last save did not land. */
+  /** Whether the last write did not land. */
   failed: boolean
   /** Load error message. */
   error: string | null
@@ -78,15 +82,12 @@ export interface KeyRotationCardFace {
   hooks: {
     keyRotationCard: SnapshotStore<KeyRotationCardState>
   }
-  toggleProvider: (provider: string, enabled: boolean) => void
   addKey: (provider: string) => void
   removeKey: (provider: string, keyId: string) => void
   editKey: (provider: string, keyId: string, value: string) => void
   moveKey: (provider: string, keyId: string, direction: 'up' | 'down') => void
   toggleTrigger: (provider: string, code: string) => void
-  setOnExhausted: (provider: string, value: 'delegate' | 'cycle') => void
   storeKey: (provider: string, keyId: string) => void
-  save: () => void
 }
 
 let keyIdCounter = 0
@@ -98,13 +99,11 @@ const DEFAULT_TRIGGERS = ['QUOTA', 'AUTH']
 interface SavedProfile {
   keys: KeyEntry[]
   triggerCodes: string[]
-  onExhausted: 'delegate' | 'cycle'
-  enabled: boolean
 }
 
 /**
  * Bridges the configurable-provider directory and the `llm-key-rotation`
- * settings namespace onto a premium card form with direct key input.
+ * settings namespace onto a card for managing a provider's additional keys.
  */
 export class KeyRotationCardController {
   private readonly store: SnapshotStore<KeyRotationCardState>
@@ -138,8 +137,8 @@ export class KeyRotationCardController {
       this.rows.clear()
       for (const entry of response.result.value.providers) {
         const existing = this.readProfile(snapshot.value, entry.provider)
-        const adapterRef = this.readAdapterKeyRef(snapshot.value, entry)
-        this.rows.set(entry.provider, this.buildRow(entry, existing, adapterRef))
+        const primaryRef = this.readAdapterKeyRef(snapshot.value, entry)
+        this.rows.set(entry.provider, this.buildRow(entry, existing, primaryRef))
       }
       void this.refreshCredentials()
       this.publish()
@@ -151,21 +150,28 @@ export class KeyRotationCardController {
     }
   }
 
-  /** Refresh credential views for all refs in current rows. */
+  /** Refresh credential facts for the primary ref and all additional refs across rows. */
   private async refreshCredentials(): Promise<void> {
-    const refs: string[] = []
+    const refs = new Set<string>()
     for (const row of this.rows.values()) {
-      for (const key of row.keys) refs.push(key.ref)
+      if (row.primaryRef !== undefined) refs.add(row.primaryRef)
+      for (const key of row.keys) refs.add(key.ref)
     }
-    if (refs.length === 0) { this.publish(); return }
+    if (refs.size === 0) { this.publish(); return }
     try {
-      const response = await this.api.credentials.describe({ refs })
+      const response = await this.api.credentials.describe({ refs: [...refs] })
       if (response.result.ok) {
-        const views = response.result.value.credentials
+        const views = response.result.value.credentials as Record<string, CredentialView>
         for (const row of this.rows.values()) {
+          if (row.primaryRef !== undefined) {
+            row.primaryConfigured = views[row.primaryRef]?.configured ?? false
+          }
           for (const key of row.keys) {
-            key.view = views[key.ref]
-            key.stored = views[key.ref]?.configured ?? false
+            // Facts only: `filled` reflects the durable credential state. Do
+            // NOT touch `stored` here — that is a transient "just stored this
+            // session" flag set only by storeKey, so one store never greens the
+            // other keys.
+            key.filled = views[key.ref]?.configured ?? false
           }
         }
       }
@@ -181,13 +187,11 @@ export class KeyRotationCardController {
     if (profile === undefined) return undefined
     const poolRefs = profile['poolRefs'] as string[] | undefined
     const keys: KeyEntry[] = (poolRefs ?? []).map((ref) => ({
-      id: newKeyId(), ref, value: '', stored: false, storing: false, failed: false, view: undefined,
+      id: newKeyId(), ref, value: '', filled: false, stored: false, storing: false, failed: false,
     }))
     return {
       keys,
       triggerCodes: (profile['triggerCodes'] as string[]) ?? [...DEFAULT_TRIGGERS],
-      onExhausted: (profile['onExhausted'] as 'delegate' | 'cycle') ?? 'delegate',
-      enabled: true,
     }
   }
 
@@ -214,20 +218,14 @@ export class KeyRotationCardController {
   private buildRow(
     entry: ConfigurableProviderView,
     existing: SavedProfile | undefined,
-    adapterRef: string | undefined,
+    primaryRef: string | undefined,
   ): RotationProviderRow {
-    if (existing !== undefined) {
-      return {
-        provider: entry.provider, displayName: entry.displayName, active: entry.active,
-        adapterKeyRef: adapterRef, enabled: existing.enabled, keys: existing.keys,
-        triggerCodes: existing.triggerCodes, onExhausted: existing.onExhausted,
-      }
-    }
+    const keys = existing?.keys ?? []
     return {
       provider: entry.provider, displayName: entry.displayName, active: entry.active,
-      adapterKeyRef: adapterRef, enabled: false,
-      keys: [{ id: newKeyId(), ref: adapterRef ?? deriveKeyRef(entry.provider, 0), value: '', stored: false, storing: false, failed: false, view: undefined }],
-      triggerCodes: [...DEFAULT_TRIGGERS], onExhausted: 'delegate',
+      primaryRef, primaryConfigured: false,
+      keys,
+      triggerCodes: existing?.triggerCodes ?? [...DEFAULT_TRIGGERS],
     }
   }
 
@@ -236,11 +234,9 @@ export class KeyRotationCardController {
     const snapshot = this.scope.getSnapshot()
     for (const [provider, row] of this.rows) {
       const existing = this.readProfile(snapshot.value, provider)
-      if (existing !== undefined && !row.enabled) {
-        row.enabled = existing.enabled
+      if (existing !== undefined) {
         row.keys = existing.keys
         row.triggerCodes = existing.triggerCodes
-        row.onExhausted = existing.onExhausted
       }
     }
     void this.refreshCredentials()
@@ -259,96 +255,21 @@ export class KeyRotationCardController {
     })
   }
 
-  /** Build the face the card's slot registration injects. */
-  inject(): KeyRotationCardFace {
-    return {
-      hooks: { keyRotationCard: this.store },
-      toggleProvider: (provider, enabled) => {
-        const row = this.rows.get(provider)
-        if (row !== undefined) { row.enabled = enabled; this.publish() }
-      },
-      addKey: (provider) => {
-        const row = this.rows.get(provider)
-        if (row === undefined) return
-        let suffix = row.keys.length
-        while (row.keys.some(k => k.ref === deriveKeyRef(provider, suffix))) suffix++
-        row.keys.push({
-          id: newKeyId(), ref: deriveKeyRef(provider, suffix), value: '',
-          stored: false, storing: false, failed: false, view: undefined,
-        })
-        this.publish()
-      },
-      removeKey: (provider, keyId) => {
-        const row = this.rows.get(provider)
-        if (row === undefined) return
-        if (row.keys.length <= 1) return
-        row.keys = row.keys.filter(k => k.id !== keyId)
-        row.keys.forEach((key, i) => { key.ref = deriveKeyRef(provider, i) })
-        this.publish()
-      },
-      editKey: (provider, keyId, value) => {
-        const row = this.rows.get(provider)
-        if (row === undefined) return
-        const key = row.keys.find(k => k.id === keyId)
-        if (key !== undefined) { key.value = value; key.failed = false; this.publish() }
-      },
-      moveKey: (provider, keyId, direction) => {
-        const row = this.rows.get(provider)
-        if (row === undefined) return
-        const index = row.keys.findIndex(k => k.id === keyId)
-        if (index < 0) return
-        const target = direction === 'up' ? index - 1 : index + 1
-        if (target < 0 || target >= row.keys.length) return
-        ;[row.keys[index]!, row.keys[target]!] = [row.keys[target]!, row.keys[index]!]
-        row.keys.forEach((key, i) => { key.ref = deriveKeyRef(provider, i) })
-        this.publish()
-      },
-      toggleTrigger: (provider, code) => {
-        const row = this.rows.get(provider)
-        if (row === undefined) return
-        const idx = row.triggerCodes.indexOf(code)
-        if (idx >= 0) row.triggerCodes = row.triggerCodes.filter(c => c !== code)
-        else row.triggerCodes = [...row.triggerCodes, code]
-        this.publish()
-      },
-      setOnExhausted: (provider, value) => {
-        const row = this.rows.get(provider)
-        if (row !== undefined) { row.onExhausted = value; this.publish() }
-      },
-      storeKey: (provider, keyId) => { void this.storeKey(provider, keyId) },
-      save: () => { void this.save() },
-    }
-  }
-
-  private async storeKey(provider: string, keyId: string): Promise<void> {
-    const row = this.rows.get(provider)
-    if (row === undefined) return
-    const key = row.keys.find(k => k.id === keyId)
-    if (key === undefined || key.value.trim() === '') return
-    key.storing = true
-    key.failed = false
-    this.publish()
-    try {
-      await this.api.credentials.set({ ref: key.ref, value: key.value.trim() })
-      key.stored = true
-      key.value = ''
-    } catch {
-      key.failed = true
-    }
-    key.storing = false
-    this.publish()
-    void this.refreshCredentials()
-  }
-
-  private async save(): Promise<void> {
+  /** Write the current profiles (additional keys + triggers) to the settings namespace. */
+  private async commitProfile(): Promise<boolean> {
     const profiles: Record<string, unknown> = {}
     for (const [provider, row] of this.rows) {
-      if (!row.enabled || row.keys.length === 0) continue
+      const keys = row.keys.filter((k) => k.ref !== '' && k.ref !== row.primaryRef)
+      if (row.primaryRef === undefined || keys.length === 0) {
+        // No primary, or no additional keys: rotation has nothing to rotate to,
+        // so remove this provider's profile entirely (the server requires a
+        // non-empty poolRefs).
+        continue
+      }
       profiles[provider] = {
-        targetRef: row.adapterKeyRef ?? deriveKeyRef(row.provider, 0),
-        poolRefs: row.keys.map(k => k.ref),
+        targetRef: row.primaryRef,
+        poolRefs: keys.map((k) => k.ref),
         triggerCodes: row.triggerCodes,
-        onExhausted: row.onExhausted,
       }
     }
     this.saving = true
@@ -356,10 +277,93 @@ export class KeyRotationCardController {
     this.publish()
     try {
       await this.scope.set('providers', profiles)
+      return true
     } catch {
       this.failed = true
+      return false
+    } finally {
+      this.saving = false
+      this.publish()
     }
-    this.saving = false
+  }
+
+  /** Build the face the card's slot registration injects. */
+  inject(): KeyRotationCardFace {
+    return {
+      hooks: { keyRotationCard: this.store },
+      addKey: (provider) => {
+        const row = this.rows.get(provider)
+        if (row === undefined || row.primaryRef === undefined) return
+        let suffix = row.keys.length
+        while (row.keys.some((k) => k.ref === deriveExtraKeyRef(provider, suffix))) suffix++
+        row.keys.push({
+          id: newKeyId(), ref: deriveExtraKeyRef(provider, suffix), value: '',
+          filled: false, stored: false, storing: false, failed: false,
+        })
+        this.publish()
+        void this.commitProfile()
+      },
+      removeKey: (provider, keyId) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        if (row.keys.length <= 1) return
+        row.keys = row.keys.filter((k) => k.id !== keyId)
+        row.keys.forEach((key, i) => { key.ref = deriveExtraKeyRef(provider, i) })
+        this.publish()
+        void this.commitProfile()
+      },
+      editKey: (provider, keyId, value) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        const key = row.keys.find((k) => k.id === keyId)
+        if (key !== undefined) { key.value = value; key.failed = false; this.publish() }
+      },
+      moveKey: (provider, keyId, direction) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        const index = row.keys.findIndex((k) => k.id === keyId)
+        if (index < 0) return
+        const target = direction === 'up' ? index - 1 : index + 1
+        if (target < 0 || target >= row.keys.length) return
+        ;[row.keys[index]!, row.keys[target]!] = [row.keys[target]!, row.keys[index]!]
+        row.keys.forEach((key, i) => { key.ref = deriveExtraKeyRef(provider, i) })
+        this.publish()
+        void this.commitProfile()
+      },
+      toggleTrigger: (provider, code) => {
+        const row = this.rows.get(provider)
+        if (row === undefined) return
+        const idx = row.triggerCodes.indexOf(code)
+        if (idx >= 0) row.triggerCodes = row.triggerCodes.filter((c) => c !== code)
+        else row.triggerCodes = [...row.triggerCodes, code]
+        this.publish()
+        void this.commitProfile()
+      },
+      storeKey: (provider, keyId) => { void this.storeKey(provider, keyId) },
+    }
+  }
+
+  private async storeKey(provider: string, keyId: string): Promise<void> {
+    const row = this.rows.get(provider)
+    if (row === undefined) return
+    const key = row.keys.find((k) => k.id === keyId)
+    if (key === undefined || key.value.trim() === '') return
+    key.storing = true
+    key.failed = false
     this.publish()
+    try {
+      await this.api.credentials.set({ ref: key.ref, value: key.value.trim() })
+      // Only the key just stored gets the transient green checkmark.
+      key.stored = true
+      key.filled = true
+      key.value = ''
+      await this.commitProfile()
+    } catch {
+      key.failed = true
+    } finally {
+      key.storing = false
+      this.publish()
+    }
+    void this.refreshCredentials()
   }
 }

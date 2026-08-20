@@ -35,13 +35,13 @@ export interface KeyRotationEvent {
   readonly rotationId: RotationId
   /** The failure code that triggered the rotation. */
   readonly triggerCode: string
-  /** Credential-ref index that was active when the failure arrived. */
-  readonly fromIndex: number
-  /** Credential-ref index now made active. */
-  readonly toIndex: number
+  /** Credential reference that was active when the failure arrived (the primary `targetRef` while index is -1). */
+  readonly fromRef: string
+  /** Credential reference now made active (the additional key written to `targetRef`). */
+  readonly toRef: string
   /** One-based position of this rotation in the current incident chain. */
   readonly retry: number
-  /** The credential reference the adapter reads (the rotation target). */
+  /** The credential reference the adapter reads (the rotation target / primary). */
   readonly targetRef: string
   /** The normalized provider-neutral failure that caused the rotation. */
   readonly failure: LlmFailure
@@ -51,23 +51,30 @@ export interface KeyRotationEvent {
 export interface RotationProfile {
   /**
    * Credential reference the adapter resolves per request (its `apiKeyEnv`).
-   * Rotation writes each pool key's value here, so the next request
-   * authenticates with the rotated key without a restart.
+   * This is the **primary** key, configured through the harness main settings
+   * (Models), never through this plugin. Rotation writes each additional key's
+   * value here, so the next request authenticates with the rotated key without
+   * a restart.
    */
   targetRef: string
   /**
-   * Ordered chain of credential references. Rotation advances through these
-   * one per qualifying failure. The first entry is the initial active key when
-   * it differs from {@link targetRef}; when they are equal, the adapter reads
-   * the same ref the chain starts from.
+   * Ordered chain of **additional** credential references (extras on top of the
+   * primary `targetRef`). Rotation advances through these one per qualifying
+   * failure. An entry equal to `targetRef` is ignored, so a legacy profile
+   * whose head duplicated the primary degrades cleanly.
    */
   poolRefs: string[]
   /** Failure codes that trigger a rotation (e.g. `QUOTA`, `RATE_LIMIT`, `AUTH`). */
   triggerCodes: string[]
   /**
-   * Behavior once every pool key has been tried in the current incident:
-   * `delegate` hands the failure to downstream recovery (dsh-llm-retry or
-   * terminal), `cycle` restarts the chain indefinitely.
+   * Optional hard cap on rotations per incident. Defaults to the number of
+   * additional keys (each extra is tried at most once). A lower value tries
+   * fewer keys before delegating. There is no `cycle` mode.
    */
-  onExhausted: 'delegate' | 'cycle'
+  maxIncidentRotations?: number
+  /**
+   * Optional cooldown in milliseconds once the cap is reached: the plugin stops
+   * rotating this provider for the window and delegates.
+   */
+  cooldownMs?: number
 }

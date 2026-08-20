@@ -70,13 +70,24 @@ function quotaFailure(): LlmFailure {
 async function harness(
   initial: Record<string, string>,
   config: keyRotation.Config,
-): Promise<{ ctx: Context; credentials: MockCredentialProvider }> {
+): Promise<{ ctx: Context; credentials: MockCredentialProvider; logs: Array<unknown[]> }> {
   const ctx = new Context()
+  const logs: Array<unknown[]> = []
+  const originalInfo = ctx.logger.info.bind(ctx.logger)
+  const originalWarn = ctx.logger.warn.bind(ctx.logger)
+  ctx.logger.info = ((...args: unknown[]) => {
+    logs.push(args)
+    return originalInfo(...args)
+  }) as typeof ctx.logger.info
+  ctx.logger.warn = ((...args: unknown[]) => {
+    logs.push(args)
+    return originalWarn(...args)
+  }) as typeof ctx.logger.warn
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(MockCredentialProvider, { initial })
   await ctx.plugin(keyRotation, config)
-  return { ctx, credentials: ctx.credentials as MockCredentialProvider }
+  return { ctx, credentials: ctx.credentials as MockCredentialProvider, logs }
 }
 
 /** Dispatch one agent/request-error waterfall and return the action. */
@@ -94,6 +105,24 @@ function dispatchError(
   )
 }
 
+/** Simulate a successful model step for a provider (resets the incident). */
+function successfulStep(ctx: Context, agent: Agent, provider = 'test'): void {
+  ctx.emit('session/event', agent.session, {
+    type: 'assistant/message',
+    seq: 0,
+    time: Date.now(),
+    data: {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+        source: { kind: 'model', provider, model: 'test-model' },
+      },
+    },
+  })
+}
+
 describe('llm-key-rotation', () => {
   let ctx: Context | undefined
 
@@ -104,16 +133,15 @@ describe('llm-key-rotation', () => {
     }
   })
 
-  it('rotates to the next pool key on a QUOTA failure and returns retry', async () => {
+  it('rotates from the primary to the first extra on a QUOTA failure and returns retry', async () => {
     const h = await harness(
       { TEST_KEY: 'key-1', TEST_KEY_2: 'key-2', TEST_KEY_3: 'key-3' },
       {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2', 'TEST_KEY_3'],
+            poolRefs: ['TEST_KEY_2', 'TEST_KEY_3'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -127,16 +155,45 @@ describe('llm-key-rotation', () => {
     expect(h.credentials.setCalls).toEqual([{ ref: 'TEST_KEY', value: 'key-2' }])
   })
 
-  it('delegates when the pool is exhausted in delegate mode', async () => {
+  it('ignores a pool head equal to the targetRef (legacy profile degrades to extras-only)', async () => {
+    const h = await harness(
+      { TEST_KEY: 'k1', TEST_KEY_2: 'k2', TEST_KEY_3: 'k3' },
+      {
+        providers: {
+          test: {
+            targetRef: 'TEST_KEY',
+            poolRefs: ['TEST_KEY', 'TEST_KEY_2', 'TEST_KEY_3'],
+            triggerCodes: ['QUOTA'],
+          },
+        },
+      },
+    )
+    ctx = h.ctx
+    const agent = mockAgent(h.ctx, 'rotate-legacy')
+
+    // First failure: primary → extra 0 (TEST_KEY_2), not TEST_KEY (itself).
+    await dispatchError(h.ctx, agent, quotaFailure())
+    expect(h.credentials.setCalls).toEqual([{ ref: 'TEST_KEY', value: 'k2' }])
+
+    // Second failure: extra 0 → extra 1 (TEST_KEY_3).
+    await dispatchError(h.ctx, agent, quotaFailure())
+    expect(h.credentials.setCalls[1]).toEqual({ ref: 'TEST_KEY', value: 'k3' })
+
+    // Third failure: pool exhausted (both extras tried) → delegate.
+    const action = await dispatchError(h.ctx, agent, quotaFailure())
+    expect(action).toBeUndefined()
+    expect(h.credentials.setCalls).toHaveLength(2)
+  })
+
+  it('delegates when the pool is exhausted (each extra tried once)', async () => {
     const h = await harness(
       { TEST_KEY: 'k1', TEST_KEY_2: 'k2' },
       {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -144,44 +201,13 @@ describe('llm-key-rotation', () => {
     ctx = h.ctx
     const agent = mockAgent(h.ctx, 'rotate-exhaust')
 
-    // First failure: rotate from index 0 → 1
+    // First failure: rotate to the single extra.
     await dispatchError(h.ctx, agent, quotaFailure())
-    // Second failure: pool exhausted (rotatedSinceSuccess = 1 >= pool.length - 1 = 1)
+    // Second failure: pool exhausted → delegate.
     const action = await dispatchError(h.ctx, agent, quotaFailure())
 
     expect(action).toBeUndefined()
     expect(h.credentials.setCalls).toHaveLength(1)
-  })
-
-  it('cycles indefinitely in cycle mode', async () => {
-    const h = await harness(
-      { TEST_KEY: 'a', TEST_KEY_2: 'b' },
-      {
-        providers: {
-          test: {
-            targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
-            triggerCodes: ['QUOTA'],
-            onExhausted: 'cycle',
-          },
-        },
-      },
-    )
-    ctx = h.ctx
-    const agent = mockAgent(h.ctx, 'rotate-cycle')
-
-    const a1 = await dispatchError(h.ctx, agent, quotaFailure())
-    const a2 = await dispatchError(h.ctx, agent, quotaFailure())
-    const a3 = await dispatchError(h.ctx, agent, quotaFailure())
-
-    expect(a1).toEqual({ kind: 'retry' })
-    expect(a2).toEqual({ kind: 'retry' })
-    expect(a3).toEqual({ kind: 'retry' })
-    expect(h.credentials.setCalls).toEqual([
-      { ref: 'TEST_KEY', value: 'b' },
-      { ref: 'TEST_KEY', value: 'a' },
-      { ref: 'TEST_KEY', value: 'b' },
-    ])
   })
 
   it('passes through non-trigger failure codes to downstream recovery', async () => {
@@ -191,9 +217,8 @@ describe('llm-key-rotation', () => {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -228,9 +253,8 @@ describe('llm-key-rotation', () => {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -251,9 +275,8 @@ describe('llm-key-rotation', () => {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -276,9 +299,8 @@ describe('llm-key-rotation', () => {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -294,47 +316,54 @@ describe('llm-key-rotation', () => {
     expect(events[0]).toMatchObject({
       provider: 'test',
       triggerCode: 'QUOTA',
-      fromIndex: 0,
-      toIndex: 1,
+      fromRef: 'TEST_KEY',
+      toRef: 'TEST_KEY_2',
       retry: 1,
       targetRef: 'TEST_KEY',
     })
     expect(events[0]!.rotationId).toEqual(expect.any(String))
   })
 
-  it('seeds the target ref from the first pool entry when target is empty', async () => {
+  it('logs a [llm-key-rotation] rotated line on success with no key values', async () => {
     const h = await harness(
-      { POOL_KEY_1: 'seeded-key' }, // ACTIVE_KEY is NOT set initially
+      { TEST_KEY: 'k1', TEST_KEY_2: 'key-2-secret' },
       {
         providers: {
           test: {
-            targetRef: 'ACTIVE_KEY',
-            poolRefs: ['POOL_KEY_1', 'POOL_KEY_2'],
+            targetRef: 'TEST_KEY',
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
     )
     ctx = h.ctx
+    const agent = mockAgent(h.ctx, 'rotate-log')
 
-    // The cache refresh and seed are background async operations.
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await dispatchError(h.ctx, agent, quotaFailure())
 
-    const resolved = await h.credentials.resolve(credentialRef('ACTIVE_KEY'))
-    expect(resolved?.value).toBe('seeded-key')
+    const entry = h.logs.find((l) => String(l[0]).includes('[llm-key-rotation] rotated'))
+    expect(entry).toBeDefined()
+    const flat = entry!.map((x) => String(x)).join(' ')
+    // The rotation record names the provider, refs, code, and retry count.
+    expect(flat).toContain('test')
+    expect(flat).toContain('TEST_KEY')
+    expect(flat).toContain('TEST_KEY_2')
+    expect(flat).toContain('QUOTA')
+    // Never log the secret value.
+    expect(flat).not.toContain('key-2-secret')
+    expect(flat).not.toContain('key-1')
   })
 
-  it('resets the rotation chain after a successful assistant message', async () => {
+  it('does not restore a primary that was never present; resets index after success', async () => {
     const h = await harness(
       { TEST_KEY: 'k1', TEST_KEY_2: 'k2' },
       {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -342,36 +371,99 @@ describe('llm-key-rotation', () => {
     ctx = h.ctx
     const agent = mockAgent(h.ctx, 'rotate-reset')
 
-    // Wait for the pool cache to populate
+    // Wait for the pool cache to populate.
     await new Promise((resolve) => setTimeout(resolve, 50))
 
-    // Rotate once (index 0 → 1)
+    // Rotate once (primary → extra 0), then succeed.
     await dispatchError(h.ctx, agent, quotaFailure())
     expect(h.credentials.setCalls).toHaveLength(1)
+    successfulStep(h.ctx, agent)
 
-    // Simulate a successful assistant message for the 'test' provider by
-    // directly emitting session/event (bypasses surfaceOp validation).
-    h.ctx.emit('session/event', agent.session, {
-      type: 'assistant/message',
-      seq: 0,
-      time: Date.now(),
-      data: {
-        turn: 1,
-        step: 1,
-        message: {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'ok' }],
-          source: { kind: 'model', provider: 'test', model: 'test-model' },
-        },
-      },
-    })
+    // Allow the async restore to settle.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // The primary was restored to its original value.
+    expect(h.credentials.setCalls[1]).toEqual({ ref: 'TEST_KEY', value: 'k1' })
 
-    // After reset, rotatedSinceSuccess=0 so the next failure can rotate again.
-    // Index is still 1; rotation goes 1 → 0, writing the cached k1 value.
+    // Next incident starts from the primary again.
     const action = await dispatchError(h.ctx, agent, quotaFailure())
     expect(action).toEqual({ kind: 'retry' })
-    expect(h.credentials.setCalls).toHaveLength(2)
-    expect(h.credentials.setCalls[1]).toEqual({ ref: 'TEST_KEY', value: 'k1' })
+    expect(h.credentials.setCalls[2]).toEqual({ ref: 'TEST_KEY', value: 'k2' })
+  })
+
+  it('caps rotations at maxIncidentRotations and delegates', async () => {
+    const h = await harness(
+      { TEST_KEY: 'k1', TEST_KEY_2: 'k2', TEST_KEY_3: 'k3' },
+      {
+        providers: {
+          test: {
+            targetRef: 'TEST_KEY',
+            poolRefs: ['TEST_KEY_2', 'TEST_KEY_3'],
+            triggerCodes: ['QUOTA'],
+            maxIncidentRotations: 1,
+          },
+        },
+      },
+    )
+    ctx = h.ctx
+    const agent = mockAgent(h.ctx, 'rotate-cap')
+
+    const a1 = await dispatchError(h.ctx, agent, quotaFailure())
+    expect(a1).toEqual({ kind: 'retry' })
+
+    const a2 = await dispatchError(h.ctx, agent, quotaFailure())
+    expect(a2).toBeUndefined() // cap reached after 1 rotation
+
+    expect(h.credentials.setCalls).toEqual([{ ref: 'TEST_KEY', value: 'k2' }])
+  })
+
+  it('enters cooldown after exhaustion and suppresses rotation within the window', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = await harness(
+        { TEST_KEY: 'k1', TEST_KEY_2: 'k2', TEST_KEY_3: 'k3' },
+        {
+          providers: {
+            test: {
+              targetRef: 'TEST_KEY',
+              poolRefs: ['TEST_KEY_2', 'TEST_KEY_3'],
+              triggerCodes: ['QUOTA'],
+              cooldownMs: 1000,
+            },
+          },
+        },
+      )
+      ctx = h.ctx
+      const agent = mockAgent(h.ctx, 'rotate-cooldown')
+
+      // First two failures rotate through both extras; the third exhausts and
+      // starts the cooldown.
+      await dispatchError(h.ctx, agent, quotaFailure())
+      await dispatchError(h.ctx, agent, quotaFailure())
+      const exhausted = await dispatchError(h.ctx, agent, quotaFailure())
+      expect(exhausted).toBeUndefined()
+      expect(h.credentials.setCalls).toHaveLength(2)
+
+      // Within the cooldown window, failures delegate WITHOUT rotating again.
+      const during = await dispatchError(h.ctx, agent, quotaFailure())
+      expect(during).toBeUndefined()
+      expect(h.credentials.setCalls).toHaveLength(2)
+      expect(h.logs.some((l) => String(l[0]).includes('cooldown'))).toBe(true)
+
+      // A later attempt inside the window is still suppressed.
+      vi.advanceTimersByTime(500)
+      const stillDuring = await dispatchError(h.ctx, agent, quotaFailure())
+      expect(stillDuring).toBeUndefined()
+      expect(h.credentials.setCalls).toHaveLength(2)
+
+      // After the window, a fresh failure still cannot rotate because the
+      // per-incident pool is exhausted without a success reset.
+      vi.advanceTimersByTime(1001)
+      const after = await dispatchError(h.ctx, agent, quotaFailure())
+      expect(after).toBeUndefined()
+      expect(h.credentials.setCalls).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('supports AUTH and RATE_LIMIT trigger codes', async () => {
@@ -381,9 +473,8 @@ describe('llm-key-rotation', () => {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2', 'TEST_KEY_3'],
+            poolRefs: ['TEST_KEY_2', 'TEST_KEY_3'],
             triggerCodes: ['AUTH', 'RATE_LIMIT', 'QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -397,7 +488,7 @@ describe('llm-key-rotation', () => {
     const rlAction = await dispatchError(h.ctx, agent, { message: 'Rate limited', code: 'RATE_LIMIT', status: 429 })
     expect(rlAction).toEqual({ kind: 'retry' })
 
-    // Pool exhausted after 2 rotations (3 keys, 2 rotations max in delegate mode)
+    // Pool exhausted after 2 rotations (2 extras).
     const exhausted = await dispatchError(h.ctx, agent, quotaFailure())
     expect(exhausted).toBeUndefined()
 
@@ -414,9 +505,8 @@ describe('llm-key-rotation', () => {
         providers: {
           test: {
             targetRef: 'TEST_KEY',
-            poolRefs: ['TEST_KEY', 'TEST_KEY_2'],
+            poolRefs: ['TEST_KEY_2'],
             triggerCodes: ['QUOTA'],
-            onExhausted: 'delegate',
           },
         },
       },
@@ -425,16 +515,16 @@ describe('llm-key-rotation', () => {
     const events: KeyRotationEvent[] = []
     const disposeObserver = h.ctx.on('llm/key-rotation', (event) => { events.push(event) })
 
-    // Rotate once to confirm it works
+    // Rotate once to confirm it works.
     await dispatchError(h.ctx, agent, quotaFailure())
     expect(events).toHaveLength(1)
 
-    // Dispose the key-rotation plugin fiber and wait for drain
+    // Dispose the key-rotation plugin fiber and wait for drain.
     const reg = h.ctx.registry.get(keyRotation)
     if (reg) for (const fiber of reg.fibers) await fiber.dispose()
     await new Promise((resolve) => setTimeout(resolve, 50))
 
-    // After disposal, a failure should not rotate
+    // After disposal, a failure should not rotate.
     const action = await dispatchError(h.ctx, agent, quotaFailure())
     expect(action).toBeUndefined()
     expect(events).toHaveLength(1) // no new telemetry

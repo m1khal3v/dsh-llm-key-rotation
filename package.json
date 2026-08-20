@@ -46,11 +46,12 @@
   },
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.types.json",
-    "prepare": "tsdown",
+    "prepare": "pnpm run build",
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify": "pnpm run typecheck && pnpm run test"
   },
   "dsh": {
     "bundle": {

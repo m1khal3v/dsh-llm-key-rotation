@@ -2,8 +2,8 @@
  * Key-rotation settings card, browser half. Registers a card in the Plugins
  * settings page under the `settings.plugin.item` keyed slot, keyed to the
  * `llm-key-rotation` namespace. The card reads the configurable-provider
- * directory so users pick from already-configured providers and add API keys
- * directly (values, not env-var names).
+ * directory and manages a provider's **additional** keys (the primary key lives
+ * in the main settings).
  * @module @m1khal3v/dsh-llm-key-rotation/client
  */
 

@@ -9,95 +9,65 @@
 
 Seamless API-key rotation for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) LLM
 providers. When a model request hits a subscription limit (quota exhausted,
-rate-limited, or auth failure), the plugin rotates to the next key in a
-pre-configured chain and retries — without a restart, without a model-visible
-surface, and without patching the harness core.
+rate-limited, or auth failure), the plugin rotates to the next **additional** key and retries —
+without a restart and without a model-visible surface.
 
-The project does not patch DeepSeek Harness core. Installing the plugin enables
-key rotation, and removing it leaves no core modifications behind.
+The plugin manages only **additional keys on top of one primary key**. The primary key is
+configured through the harness's main settings (the Models page / `apiKeyEnv`), never through
+this plugin. On a failure the plugin writes each additional key as the active key in turn;
+once every additional key has been tried it delegates to downstream recovery. There is no
+indefinite `cycle` mode.
 
-> Status: beta. Suitable for daily use with any DeepSeek Harness profile that
-> mounts the `agent/request-error` recovery waterfall.
+The project does not patch DeepSeek Harness core. Installing the plugin enables key
+rotation, and removing it leaves no core modifications behind.
+
+> Status: beta. Suitable for daily use with any DeepSeek Harness profile that mounts the
+> `agent/request-error` recovery waterfall.
 
 ## How It Works
 
-DeepSeek Harness adapters resolve the API key **once per model request** through
-the `ctx.credentials` seam. This plugin hooks into the agent loop's
-`agent/request-error` recovery waterfall: when a request fails with a configured
-trigger code (`QUOTA`, `RATE_LIMIT`, `AUTH`), it writes the next pool key's value
-to the credential reference the adapter reads, then returns `{ kind: 'retry' }`.
-The loop opens a fresh turn that authenticates with the rotated key — the
-adapter re-resolves the credential reference on the next request and picks up the
-new value automatically.
+DeepSeek Harness adapters resolve the API key **once per model request** through the
+`ctx.credentials` seam. This plugin hooks into the agent loop's `agent/request-error`
+recovery waterfall: when a request fails with a configured trigger code (`QUOTA`,
+`RATE_LIMIT`, `AUTH`), it writes the next **additional** pool key's value to the primary
+credential reference the adapter reads, then returns `{ kind: 'retry' }`. The loop opens a
+fresh turn that authenticates with the rotated key — the adapter re-resolves the reference
+on the next request and picks up the new value automatically.
 
 ```text
+primary key configured in main settings (Models)
 model request fails (QUOTA / RATE_LIMIT / AUTH)
   → agent/request-error waterfall
   → llm-key-rotation listener
-  → ctx.credentials.set(targetRef, nextPoolKey)
-  → ctx.emit('llm/key-rotation', telemetry)
+  → writes additional key[0] value to targetRef (primary ref)
+  → [llm-key-rotation] rotated …  (stdout log)
   → return { kind: 'retry' }
-  → loop opens a fresh turn
-  → adapter re-resolves targetRef → new key
-  → request authenticates with the rotated key
+  → loop opens a fresh turn → adapter re-resolves targetRef → new key
+  → on success the primary key is restored to targetRef
 ```
 
 ## Quick Start
 
-Prerequisites: at least two API keys for the same provider, stored as separate
-credential references.
+Prerequisites: one primary API key (configured through the harness main settings) and at
+least one **additional** key for the same provider, stored as separate credential
+references.
 
 ### Install the plugin
 
-The `dsh` CLI is required. It comes from the `@deepseek-ai/dsh` package, which
-you may have installed globally or run from a source checkout. Both paths are
-shown below — pick the one that matches your setup.
-
-**Case A — `dsh` installed globally** (`npm install -g @deepseek-ai/dsh`):
+The `dsh` CLI is required. It comes from the `@deepseek-ai/dsh` package.
 
 ```sh
-# From npm (prebuilt lib/, no build permission needed)
 dsh plugin --profile web add @m1khal3v/dsh-llm-key-rotation
-
-# Or from GitHub (runs the prepare build script at install time; pnpm >=10
-# asks you to allow it — see "Installing from GitHub" below)
-dsh plugin --profile web add github:m1khal3v/dsh-llm-key-rotation
-
-# Or from a local tarball (no network)
-npm pack   # in the plugin directory, produces a .tgz
-dsh plugin --profile web add ./m1khal3v-dsh-llm-key-rotation-0.1.0.tgz
 ```
-
-**Case B — running `dsh` from a source checkout** (the `deepseek-harness`
-repository cloned locally):
-
-```sh
-cd /path/to/deepseek-harness
-
-# Prefix every dsh command with pnpm
-pnpm dsh plugin --profile web add @m1khal3v/dsh-llm-key-rotation
-
-pnpm dsh --profile web --dump-config   # verify the plugin row appears
-pnpm dsh --profile web                  # boot
-```
-
-**Case C — no `dsh` CLI yet.** Install it first:
-
-```sh
-npm install -g @deepseek-ai/dsh
-dsh --version   # confirm
-```
-
-Then follow Case A above.
 
 ### Boot and configure
 
 ```sh
-dsh --profile web
+dsh web
 ```
 
-Configure rotation profiles through the `llm-key-rotation:` settings section
-(written via `dsh` settings, the web UI, or `$DSH_HOME/settings.yaml`):
+Configure rotation profiles through the `llm-key-rotation:` settings section (written via
+the web UI settings card or `$DSH_HOME/settings.yaml`):
 
 ```yaml
 llm-key-rotation:
@@ -105,43 +75,26 @@ llm-key-rotation:
     opencode:
       targetRef: OPENCODE_API_KEY
       poolRefs:
-        - OPENCODE_API_KEY
         - OPENCODE_API_KEY_2
         - OPENCODE_API_KEY_3
       triggerCodes:
         - QUOTA
         - RATE_LIMIT
         - AUTH
-      onExhausted: delegate
+      maxIncidentRotations: 2
+      cooldownMs: 60000
 ```
 
-Store the key values as credentials (through the web Models page or the
-credentials API). The plugin reads only references, never values — secrets stay
-in the credential store.
+- `targetRef`: the **primary** reference the adapter reads (its `apiKeyEnv`). Set through
+  the main settings, not the plugin.
+- `poolRefs`: **additional** references only. An entry equal to `targetRef` is ignored, so a
+  legacy profile whose head duplicated the primary still works.
+- Store the additional key values as credentials (through the web card or the credentials
+  API). The plugin reads only references, never values.
 
-### Installing from GitHub
-
-A git install fetches sources, not built artifacts, so pnpm runs the package's
-`prepare` script to build `lib/` at install time. pnpm ≥10 refuses to run a git
-dependency's build script until you allow it. The first `add` fails; `dsh`
-points at the fix — copy the exact package key pnpm printed into the profile's
-`pnpm-workspace.yaml`:
-
-```yaml
-# $DSH_HOME/profiles/web/pnpm-workspace.yaml
-allowBuilds:
-  '@m1khal3v/dsh-llm-key-rotation': true
-```
-
-Then re-run `dsh plugin --profile web add github:m1khal3v/dsh-llm-key-rotation`.
-
-Treat that allowance as what it is: permission to execute the package's code on
-your machine at install time. Only allow packages whose source you trust, and
-pin a commit (`github:m1khal3v/dsh-llm-key-rotation#<sha>`) so a later push
-cannot silently change what runs.
-
-Installing from npm or a tarball needs no build permission — the published
-tarball already carries prebuilt `lib/`.
+> **Important:** if you configure key rotation *before* the plugin 0.5 upgrade and your
+> profile stored `targetRef` as the first element of `poolRefs`, that head is now ignored —
+> the primary is no longer part of the rotation pool.
 
 ## Configuration
 
@@ -149,16 +102,16 @@ Each provider route gets one rotation profile:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `targetRef` | — (required) | Credential reference the adapter resolves per request (its `apiKeyEnv`). Rotation writes each pool key's value here. |
-| `poolRefs` | — (required, min 1) | Ordered chain of credential references. Rotation advances through these one per qualifying failure. |
-| `triggerCodes` | `['QUOTA']` | Failure codes that trigger a rotation. Common: `QUOTA`, `RATE_LIMIT`, `AUTH`. |
-| `onExhausted` | `delegate` | Behavior once every pool key has been tried: `delegate` hands the failure to downstream recovery (dsh-llm-retry or terminal), `cycle` restarts the chain indefinitely. |
+| `targetRef` | — (required) | **Primary** credential reference the adapter resolves per request (its `apiKeyEnv`). Configured in the main settings. |
+| `poolRefs` | — (required, min 1) | Ordered chain of **additional** credential references. Rotation advances through these one per qualifying failure. |
+| `triggerCodes` | `['QUOTA','AUTH']` | Failure codes that trigger a rotation. Common: `QUOTA`, `RATE_LIMIT`, `AUTH`. |
+| `maxIncidentRotations` | number of extras | Optional hard cap on rotations per incident; a lower value tries fewer keys before delegating. |
+| `cooldownMs` | none | Optional cooldown (ms) once the cap is reached, during which the plugin stops rotating this provider and delegates. |
 
 ### Composition entry (cordis.patch.yml)
 
-The bundle's patch file inserts one plugin row. It is applied after
-`@deepseek-ai/dsh-base`, so the listener registers after `dsh-llm-retry` in the
-waterfall:
+The bundle's patch file inserts one plugin row, applied after `@deepseek-ai/dsh-base`, so the
+listener registers after `dsh-llm-retry` in the waterfall:
 
 ```yaml
 - insert:
@@ -168,125 +121,77 @@ waterfall:
         providers: {}
 ```
 
-Users override `providers` through the settings section without touching the
-bundle.
+Users override `providers` through the settings section without touching the bundle.
 
 ## Composition with dsh-llm-retry
 
-This listener registers **after** `dsh-llm-retry` in the `agent/request-error`
-waterfall (the bundle is applied after `@deepseek-ai/dsh-base`). The interaction
-depends on which trigger codes are configured:
+This listener registers **after** `dsh-llm-retry` in the `agent/request-error` waterfall.
+The interaction depends on which trigger codes are configured:
 
-- **`QUOTA` and `AUTH`** are NOT in `dsh-llm-retry`'s default `retryableCodes`,
-  so `dsh-llm-retry` delegates via `next()` and rotation acts immediately.
-- **`RATE_LIMIT`** IS in `dsh-llm-retry`'s default `retryableCodes`, so
-  `dsh-llm-retry` intercepts it first and retries with backoff. Rotation acts
-  only after `dsh-llm-retry` exhausts its retry budget and delegates. To rotate
-  on `RATE_LIMIT` immediately, remove `RATE_LIMIT` from the provider profile's
-  `retryPolicy.retryableCodes`.
+- **`QUOTA` and `AUTH`** are NOT in `dsh-llm-retry`'s default `retryableCodes`, so rotation
+  acts immediately.
+- **`RATE_LIMIT`** IS in `dsh-llm-retry`'s default `retryableCodes`, so `dsh-llm-retry`
+  intercepts it first and retries with backoff. Rotation acts only after `dsh-llm-retry`
+  exhausts its budget and delegates. To rotate on `RATE_LIMIT` immediately, remove
+  `RATE_LIMIT` from the provider profile's `retryableCodes`.
 
-## Telemetry
+## Telemetry (stdout)
 
-The plugin emits a live `llm/key-rotation` Cordis event after each rotation
-commits. The event is non-durable — it never enters the session log, so a harness
-that does not know this plugin's event type can still resume sessions that
-produced it. Telemetry or observation plugins listen with:
+Every rotation, exhaustion, cooldown, and primary-restore is written to **stdout of the
+process that launches `dsh`** with a `[llm-key-rotation]` tag — e.g.:
 
-```ts
-ctx.on('llm/key-rotation', (event) => {
-  console.log(`rotated ${event.provider}: key #${event.fromIndex} → #${event.toIndex} (${event.triggerCode})`)
-})
+```text
+[llm-key-rotation] rotated provider="opencode" "OPENCODE_API_KEY"→"OPENCODE_API_KEY_2" (QUOTA) retry=1 rotationId=…
+[llm-key-rotation] restored primary "OPENCODE_API_KEY" for provider "opencode"; index→0
 ```
 
-The event payload carries: `provider`, `rotationId`, `triggerCode`, `fromIndex`,
-`toIndex`, `retry`, `targetRef`, and the normalized `failure`.
+Run `dsh web` from a terminal you can watch to confirm rotation works. No key values are
+ever logged — only references, indices, and failure codes.
+
+A live `llm/key-rotation` Cordis event is also emitted after each rotation for in-process
+consumers (`ctx.on('llm/key-rotation', …)`); the event is non-durable.
 
 ## Pool Value Caching
 
-Pool key values are cached at load and refreshed on settings change or
-`credentials/updated` for a pool ref. The cache preserves the original key
-values even after `targetRef` (often equal to `poolRefs[0]`) is overwritten by a
-rotation, so cycling back to a previously-used pool entry writes the original key
-rather than the one that replaced it.
-
-## Proactive Seeding
-
-When a profile's `targetRef` is empty and its first pool entry (`poolRefs[0]`)
-holds a value and is a distinct reference, the plugin writes that value to
-`targetRef` at load time. This lets the first request authenticate without
-waiting for a `MISSING_CREDENTIAL` failure. A same-reference pool head
-(`targetRef === poolRefs[0]`) has nothing to seed from; an empty pool head leaves
-onboarding to the adapter's own missing-credential diagnostic.
+Additional key values are cached at load and refreshed on settings change or
+`credentials/updated` for a pool ref. The cache preserves original extra values even after
+`targetRef` is overwritten by a rotation. After a successful model step the plugin restores
+the **primary** value to `targetRef`, so the next incident begins from the primary again.
 
 ## Web UI Settings Card
 
-The plugin ships a browser-half that registers a **Key Rotation** card in the
-Plugins settings page (`Settings → Plugins → Configurable`). The card provides:
+The plugin ships a browser half that registers a **Key Rotation** card in the Plugins
+settings page (`Settings → Plugins → Configurable`). The card:
 
-- **YAML editor** for the `providers` map — edit rotation profiles (targetRef,
-  poolRefs, triggerCodes, onExhausted) directly as YAML, with live validation.
-  The Save button writes the profiles to `settings.yaml` through the settings
-  wire API.
-- **Credential inputs** — each credential reference found in the current
-  profiles appears as a row with a password input and a Store button. Storing a
-  key writes it to `.credentials.yaml` through the credentials wire API. The
-  card shows whether each reference is configured, its source, and whether it is
-  writable or read-only (set in the environment).
+- Shows each provider's **primary** reference and whether it is configured. If the primary
+  is not configured, it shows "configure the primary key in the main settings first" and
+  disables the additional-key editor.
+- Lets you **add / remove / reorder additional keys** and store their values directly
+  (values, not env-var names). Storing a key writes it to the credential store and saves the
+  profile **automatically** — there is no Save button.
+- Shows each additional key's **filled** state (a stored value exists) and sticker after the
+  current store.
+- Lets you pick which trigger codes rotate.
 
-The card reads and writes through the same wire APIs the Models page uses, so no
-new host-side code is required. Configuration changes take effect on the next
-qualifying failure without a restart.
-
-The browser bundle is shipped as `lib/client.js` and materialized through the
-dsh module system (`window.__ModuleLoader__`). The bundle is part of the same
-npm package — installing `@m1khal3v/dsh-llm-key-rotation` brings both the
-server plugin and the settings card.
-
-## Model Experience
-
-### Key rotation recovery
-
-#### What the model sees
-
-No rotation event, credential write, provider error, or failed partial output
-is model-visible. The retry turn reconstructs the same explicit provider/model
-request from durable surface history; failed chunks never enter derived
-messages. The rotated key reaches the next request through the credential seam
-with no prompt or system-prompt change.
-
-#### Token effect
-
-Each rotation opens a new provider request and may repeat input-token billing.
-`onExhausted: delegate` limits rotations to `poolRefs.length - 1` per incident;
-`onExhausted: cycle` can consume unbounded requests until success or
-cancellation. The `llm/key-rotation` event itself contributes no tokens.
-
-#### KV Cache effect
-
-The reconstructed request preserves the prior prefix and is eligible for
-provider cache reuse under that provider's rules. The non-surface rotation event
-and credential write do not change cache identity.
+The card reads/writes through the same wire APIs the Models page uses, so no new host-side
+code is required. The browser bundle is materialized through the dsh module system as
+`lib/client.js`.
 
 ## Known Limitations
 
-- **`targetRef` must not be shadowed by the environment** — `ctx.credentials.set`
-  is rejected when a read-only environment variable supplies the same reference.
-  Store pool keys under distinct references (e.g. `OPENCODE_API_KEY_2`,
-  `_3`) and let the plugin write the active key to `targetRef` through the
-  managed credential store.
-- **Pool values are cached at load** — a key added to a pool reference after
-  startup is picked up through the `credentials/updated` event or a settings
-  change, not by re-reading on every rotation.
-- **`RATE_LIMIT` rotation follows `dsh-llm-retry`'s budget** — because
-  `RATE_LIMIT` is in `dsh-llm-retry`'s default retryable codes, rotation on
-  `RATE_LIMIT` acts only after `dsh-llm-retry` exhausts its retry budget. Remove
-  `RATE_LIMIT` from the provider's `retryPolicy.retryableCodes` to rotate
-  immediately.
-- **The `llm/key-rotation` event is non-durable** — it is a live Cordis event,
-  not a session-log event. Telemetry consumers must listen in-process; the event
-  does not survive a session reload.
-- **One credential serves every model on a route** — rotation is per provider
-  route, not per model. All models on a rotated route share the same active key.
+- **`targetRef` must not be shadowed by the environment** — `ctx.credentials.set` is
+  rejected when a read-only environment variable supplies the same reference. Store
+  additional keys under distinct references and let the plugin write them to `targetRef`
+  through the managed credential store.
+- **Pool values are cached at load** — a key added to a pool reference after startup is
+  picked up through the `credentials/updated` event or a settings change, not by re-reading
+  on every rotation.
+- **`RATE_LIMIT` rotation follows `dsh-llm-retry`'s budget** — remove `RATE_LIMIT` from the
+  provider's `retryableCodes` to rotate immediately.
+- **The `llm/key-rotation` event is non-durable** — it is a live Cordis event, not a
+  session-log event. The durable rotation trail is the stdout log above.
+- **One credential serves every model on a route** — rotation is per provider route, not per
+  model.
 
 ## Development
 
@@ -295,11 +200,11 @@ pnpm install --frozen-lockfile
 pnpm run typecheck
 pnpm run test
 pnpm run build
+pnpm run verify    # typecheck + test
 ```
 
-Node `^22.19 || >=24`. The package depends on `@deepseek-ai/dsh-*` peer packages
-provided by the dsh installation; dev dependencies are installed from npm for
-local development and testing.
+Node `^22.19 || >=24`. The package depends on `@deepseek-ai/dsh-*` peer packages provided by
+the dsh installation; dev dependencies are installed from npm for local development.
 
 ## License
 
