@@ -54,8 +54,14 @@ export const inject = ['agents', 'credentials']
 
 const NS = settingsNamespace('llm-key-rotation')
 
-/** Default trigger codes when a profile omits `triggerCodes`: an exhausted subscription. */
-const DEFAULT_TRIGGER_CODES = Object.freeze(['QUOTA'])
+/**
+ * Default trigger codes when a profile omits `triggerCodes`. Only codes that
+ * dsh-llm-retry does NOT retry by default — QUOTA and AUTH reach this plugin
+ * immediately because llm-retry delegates via next(). RATE_LIMIT IS in
+ * llm-retry's default retryableCodes, so it is intercepted first; include it
+ * only if the provider profile removes RATE_LIMIT from retryPolicy.retryableCodes.
+ */
+const DEFAULT_TRIGGER_CODES = Object.freeze(['QUOTA', 'AUTH'])
 
 const profileSchema: z<RotationProfile> = z.object({
   targetRef: z.string().role('credential-ref').required(),
@@ -139,24 +145,30 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * Best-effort proactive seed: when a profile's target reference is empty and
-   * its first pool entry holds a value (and is a distinct reference), write that
-   * value to the target so the first request authenticates without waiting for
-   * a `MISSING_CREDENTIAL` failure. A same-reference pool head has nothing to
-   * seed from; an empty pool head leaves onboarding to the adapter's own
-   * missing-credential diagnostic.
+   * Best-effort proactive seed: when a profile's target reference is empty
+   * (nothing resolves) and a pool entry holds a value, write that value to
+   * the target so the first request authenticates. CRITICAL: never overwrite a
+   * non-empty targetRef — the adapter might already have a working key there.
    */
   const seedIfNeeded = async (provider: string, profile: RotationProfile): Promise<void> => {
-    if (profile.targetRef === profile.poolRefs[0]) return
     const target = credentialRef(profile.targetRef)
+    // NEVER overwrite an existing target value — it might be the working key
     if ((await resolveRef(target)) !== undefined) return
-    const first = poolCaches.get(provider)?.get(0)
-      ?? await resolveRef(credentialRef(profile.poolRefs[0]!))
-    if (first === undefined) return
+    // Find the first pool entry with a stored value
+    const cache = poolCaches.get(provider)
+    let firstValue: string | undefined
+    for (let i = 0; i < profile.poolRefs.length; i++) {
+      const ref = profile.poolRefs[i]!
+      if (ref === profile.targetRef) continue // same ref, can't seed from itself
+      firstValue = cache?.get(i) ?? await resolveRef(credentialRef(ref))
+      if (firstValue !== undefined) break
+    }
+    if (firstValue === undefined) return
     try {
-      await ctx.credentials.set(target, first)
+      await ctx.credentials.set(target, firstValue)
+      ctx.logger.info('llm-key-rotation: seeded "%s" from pool for provider "%s"', profile.targetRef, provider)
     } catch (error: unknown) {
-      ctx.logger.warn('llm-key-rotation: could not seed "%s" from "%s"', profile.targetRef, profile.poolRefs[0])
+      ctx.logger.warn('llm-key-rotation: could not seed "%s" for provider "%s"', profile.targetRef, provider)
       ctx.logger.warn(error)
     }
   }
@@ -216,6 +228,9 @@ export function apply(ctx: Context, config: Config): void {
     const pool = profile.poolRefs
     const state = getState(provider)
     if (profile.onExhausted === 'delegate' && state.rotatedSinceSuccess >= pool.length - 1) {
+      // Pool exhausted: delegate to downstream recovery (llm-retry or terminal),
+      // NOT return undefined — undefined is terminal and prevents the loop from
+      // reaching llm-retry's own recovery path.
       return undefined
     }
     const fused = AbortSignal.any([signal, lifetime.signal])
@@ -271,11 +286,12 @@ export function apply(ctx: Context, config: Config): void {
     // order rather than racing on the shared reference.
     const result = state.chain
       .then(() => (lifetime.signal.aborted ? undefined : rotate(provider, profile, failure, signal)))
+      .then((action) => action ?? next())
       .catch((error: unknown) => {
         // A rotation failure must never break the recovery waterfall; delegate.
         ctx.logger.warn('llm-key-rotation: rotation for provider "%s" failed; delegating', provider)
         ctx.logger.warn(error)
-        return undefined
+        return next()
       })
     state.chain = result.then(() => undefined, () => undefined)
     return result

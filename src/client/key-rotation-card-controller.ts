@@ -92,7 +92,7 @@ export interface KeyRotationCardFace {
 let keyIdCounter = 0
 function newKeyId(): string { return `key-${++keyIdCounter}` }
 
-const DEFAULT_TRIGGERS = ['QUOTA', 'RATE_LIMIT', 'AUTH']
+const DEFAULT_TRIGGERS = ['QUOTA', 'AUTH']
 
 /** Saved rotation profile shape read from the settings namespace. */
 interface SavedProfile {
