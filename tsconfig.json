@@ -3,7 +3,8 @@
     "target": "ES2023",
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "strict": true,
     "noImplicitAny": true,
     "noUnusedLocals": true,
@@ -24,6 +25,6 @@
     "outDir": "lib",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["node_modules", "lib", "tests"]
 }

@@ -218,6 +218,30 @@ waiting for a `MISSING_CREDENTIAL` failure. A same-reference pool head
 (`targetRef === poolRefs[0]`) has nothing to seed from; an empty pool head leaves
 onboarding to the adapter's own missing-credential diagnostic.
 
+## Web UI Settings Card
+
+The plugin ships a browser-half that registers a **Key Rotation** card in the
+Plugins settings page (`Settings → Plugins → Configurable`). The card provides:
+
+- **YAML editor** for the `providers` map — edit rotation profiles (targetRef,
+  poolRefs, triggerCodes, onExhausted) directly as YAML, with live validation.
+  The Save button writes the profiles to `settings.yaml` through the settings
+  wire API.
+- **Credential inputs** — each credential reference found in the current
+  profiles appears as a row with a password input and a Store button. Storing a
+  key writes it to `.credentials.yaml` through the credentials wire API. The
+  card shows whether each reference is configured, its source, and whether it is
+  writable or read-only (set in the environment).
+
+The card reads and writes through the same wire APIs the Models page uses, so no
+new host-side code is required. Configuration changes take effect on the next
+qualifying failure without a restart.
+
+The browser bundle is shipped as `lib/client.js` and materialized through the
+dsh module system (`window.__ModuleLoader__`). The bundle is part of the same
+npm package — installing `@m1khal3v/dsh-llm-key-rotation` brings both the
+server plugin and the settings card.
+
 ## Model Experience
 
 ### Key rotation recovery

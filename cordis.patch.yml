@@ -1,9 +1,8 @@
 # @m1khal3v/dsh-llm-key-rotation — bundle patch layer.
 #
-# Inserts one plugin row that mounts the key-rotation listener on the agent
-# loop's agent/request-error recovery waterfall. The bundle is applied after
-# @deepseek-ai/dsh-base, so this listener registers after dsh-llm-retry and is
-# downstream of it in the waterfall:
+# Inserts two plugin rows: the server-side rotation listener and the
+# browser-side settings card. The bundle is applied after @deepseek-ai/dsh-base,
+# so the listener registers after dsh-llm-retry in the waterfall:
 #
 #   - QUOTA and AUTH are NOT in dsh-llm-retry's default retryableCodes, so
 #     llm-retry delegates via next() and rotation acts immediately.
@@ -13,10 +12,17 @@
 #     RATE_LIMIT from the provider profile's retryPolicy.retryableCodes.
 #
 # Configure provider rotation profiles through the `llm-key-rotation:` settings
-# section (written by the web Models/card UI or settings.yaml); the composition
+# section (written by the web Plugins card or settings.yaml); the composition
 # `providers` map below starts empty and is overridden per deployment.
 - insert:
     - id: llm-key-rotation
       name: '@m1khal3v/dsh-llm-key-rotation'
       config:
         providers: {}
+
+    # Browser-half plugin: registers the Key Rotation card in the Plugins
+    # settings page. The modules node half discovers the dsh.client manifest
+    # in this package's package.json and materializes lib/client.js through
+    # the module table.
+    - id: ui-key-rotation
+      name: '@m1khal3v/dsh-llm-key-rotation/client'
