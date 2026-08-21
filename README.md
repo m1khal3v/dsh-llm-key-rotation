@@ -3,7 +3,6 @@
   <img alt="DeepSeek Harness" src="https://img.shields.io/badge/deepseek--harness-v0.1.1--rc.1-263146?style=flat-square">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-263146?style=flat-square"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-beta-7da1de?style=flat-square">
-  <a href="https://github.com/m1khal3v/dsh-llm-key-rotation"><img alt="GitHub" src="https://img.shields.io/badge/repo-m1khal3v%2Fdsh--llm--key--rotation-4b6fff?style=flat-square"></a>
 </p>
 
 <h1 align="center">dsh-llm-key-rotation</h1>
