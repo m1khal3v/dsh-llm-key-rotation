@@ -181,7 +181,7 @@ export function apply(ctx: Context, config: Config): void {
 
   // Refresh a changed chain cache when any of a provider's chain refs changes,
   // so a newly-stored key is picked up without a restart.
-  ctx.on('credentials/updated', (ref: CredentialRef) => {
+  ctx.on('credentials/reference-updated', (ref: CredentialRef) => {
     const refStr = String(ref)
     for (const [provider, profile] of Object.entries(profiles())) {
       if (profile.apiKeyEnvChain.includes(refStr)) void refreshChain(provider, profile)
