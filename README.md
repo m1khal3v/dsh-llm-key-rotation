@@ -6,7 +6,9 @@
 </p>
 
 <h1 align="center">dsh-llm-key-rotation</h1>
-
+<p align="center">
+  <img width="500" height="502" alt="изображение" src="https://github.com/user-attachments/assets/84f63f77-3492-4027-ace7-30b6d08616ef" />
+</p>
 <p align="center">
   <b>Seamless API-key rotation for <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>.</b><br>
   Hit a quota limit or 429 Rate Limit? The plugin swaps in the next key you configured and retries instantly — no restarts, no context loss, and zero interruptions.
