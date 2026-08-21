@@ -9,7 +9,7 @@
 
 <p align="center">
   <b>Seamless API-key rotation for <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>.</b><br>
-  Hit a quota limit or 429 Rate Limit? The plugin swaps the dead key with a fresh spare and retries instantly — no restarts, no context loss, and zero interruptions.
+  Hit a quota limit or 429 Rate Limit? The plugin swaps in the next key you configured and retries instantly — no restarts, no context loss, and zero interruptions.
 </p>
 
 ---
@@ -17,7 +17,7 @@
 ## ⚡️ Highlights
 
 - 🔄 **Invisible to Agent & User**: Request fails with quota/rate limit → plugin hot-swaps the key → request retries and succeeds seamlessly.
-- 🎛 **Native Web UI**: Add, manage, and toggle spare keys right inside Settings.
+- 🎛 **Native Web UI**: List every key a provider can use and toggle rotation right inside Settings.
 - 🧠 **Smart Anti-Spin**: Cooldown discipline prevents infinite loops if all your keys are exhausted.
 - 🧼 **Zero Core Patches**: Plugs cleanly into the Harness recovery waterfall — safe to install, safe to remove.
 
@@ -30,13 +30,13 @@
 │  Model Request  │ ───────────────────────────────────► │  llm-key-rotation    │
 └─────────────────┘                                      └──────────┬───────────┘
          ▲                                                          │
-         │                  { kind: 'retry' }                       │ 1. Pick next spare key
+         │                  { kind: 'retry' }                       │ 1. Pick next key
          │             (Adapter re-resolves key)                    │ 2. Hot-swap env ref
          └──────────────────────────────────────────────────────────┘
 ```
 
-1. Your primary key works as usual.
-2. If a request fails (`QUOTA`, `RATE_LIMIT`, or `AUTH`), the plugin loads the next spare key from your chain.
+1. You keep working with your currently-active key as usual.
+2. If a request fails (`QUOTA`, `RATE_LIMIT`, or `AUTH`), the plugin loads the next key from your configured chain.
 3. The turn retries with the new key, and future requests continue with the working key.
 
 ---
@@ -55,7 +55,7 @@ Navigate to **Settings** → **Plugins** → **Key Rotation**:
 
 1. **Toggle on** rotation for your target provider.
 2. Select your trigger codes (default: `QUOTA`, `AUTH`).
-3. Click **Add key**, paste your spare keys, and hit **Save**.
+3. Click **Add key**, paste all the keys you want that provider to rotate through, and hit **Save**.
 
 *(Keys are safely saved to the Harness credential store)*.
 
@@ -63,7 +63,7 @@ Navigate to **Settings** → **Plugins** → **Key Rotation**:
 
 ## ⚙️ Behavior & Good to Know
 
-- **Smart Rotation Window (300s):** During consecutive failures, the plugin walks forward through your spare keys. If no failures occur for >5 minutes, the chain resets to start from the top again.
+- **Smart Rotation Window (300s):** During consecutive failures, the plugin walks forward through your configured keys. If no failures occur for >5 minutes, the chain resets to start from the top again.
 - **Interplay with `dsh-llm-retry`:**
   - `QUOTA` and `AUTH` rotate **immediately**.
   - `RATE_LIMIT` is handled by `dsh-llm-retry` first (with backoff). To rotate instantly on 429 errors instead, simply remove `RATE_LIMIT` from your provider's `retryableCodes`.

@@ -1,8 +1,8 @@
 /**
  * Controller for the key-rotation settings card.
  *
- * The card manages a provider's spare-key chain. Each enabled provider lists its
- * chain references in the `llm-key-rotation` settings section as
+ * The card manages the chain of API keys a provider may use. Each provider lists
+ * its chain references in the `llm-key-rotation` settings section as
  * `apiKeyEnvChain` (e.g. `OPENCODE_GO_API_KEY_CHAIN_1`, `_CHAIN_2`, …). A key
  * value lives under each such reference in the credential store — a value is
  * written (credentials.set) and never read back, so a saved key's input becomes
@@ -24,12 +24,12 @@ export function envRefOf(provider: string): string {
   return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
 }
 
-/** Derive a provider's slot-N spare-key reference (`…_CHAIN_N`). */
+/** Derive a provider's slot-N key reference (`…_CHAIN_N`). */
 function chainRefOf(provider: string, n: number): string {
   return `${envRefOf(provider)}_CHAIN_${n}`
 }
 
-/** One spare-key row in a provider's chain. */
+/** One key row in a provider's chain. */
 export interface ChainEntry {
   /** Stable client-side id for React keys. */
   id: string
@@ -55,7 +55,7 @@ export interface RotationProviderRow {
   envRef: string
   /** Trigger codes that rotate. */
   rotateOn: string[]
-  /** Spare-key chain slots (values written to their refs). */
+  /** Key chain slots (values written to their refs). */
   chain: ChainEntry[]
 }
 
@@ -100,7 +100,7 @@ interface SavedProfile {
 
 /**
  * Bridges the configurable-provider directory and the `llm-key-rotation`
- * settings namespace onto a card for managing a provider's spare-key chain.
+ * settings namespace onto a card for managing a provider's key chain.
  */
 export class KeyRotationCardController {
   private readonly store: SnapshotStore<KeyRotationCardState>

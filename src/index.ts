@@ -14,18 +14,19 @@
  * Configuration carries only provider flags and credential *references* — never
  * key values. Each profile is `{ enabled, rotate_on, apiKeyEnvChain }` keyed by
  * provider route id. The active key lives in the provider's environment
- * reference (`envRefOf(provider)`, e.g. `OPENCODE_GO_API_KEY`). The spare keys
- * live one per reference listed in `apiKeyEnvChain` (e.g. `OPENCODE_GO_API_KEY_CHAIN_1`,
- * `OPENCODE_GO_API_KEY_CHAIN_2`, …), with values stored through the credential
- * store (the web card writes them there) and read at rotation time.
+ * reference (`envRefOf(provider)`, e.g. `OPENCODE_GO_API_KEY`). Every other key
+ * the provider may use lives one per reference listed in `apiKeyEnvChain` (e.g.
+ * `OPENCODE_GO_API_KEY_CHAIN_1`, `OPENCODE_GO_API_KEY_CHAIN_2`, …), with values
+ * stored through the credential store (the web card writes them there) and read
+ * at rotation time.
  *
  * Walk discipline (no unbounded spinning), keyed to the last write timestamp:
- *   - The latest spare-key write carries a timestamp. A failing request that
+ *   - The latest key write carries a timestamp. A failing request that
  *     arrives within 300 s of it advances to the NEXT chain entry (a live series
  *     of failures walks the chain forward).
  *   - A failing request that arrives 300 s or more after the last write starts
  *     again from chain head (index 0) — the previously-last key may have become
- *     stale, so retry the spares from the beginning.
+ *     stale, so retry the available keys from the beginning.
  *   - If no `apiKeyEnvChain` key is stored (or the provider is disabled), the
  *     plugin hands the failure to downstream recovery immediately. Once every
  *     chain key has been written within one 300 s window and a failure still
@@ -78,7 +79,7 @@ const NS = settingsNamespace('llm-key-rotation')
  */
 const DEFAULT_ROTATE_ON = Object.freeze(['QUOTA', 'AUTH'])
 
-/** How long a spare-key write stays "fresh": failures within this window continue the chain. */
+/** How long a key write stays "fresh": failures within this window continue the chain. */
 const CHAIN_WINDOW_MS = 300_000
 
 /** Derive the provider's env (apiKeyEnv) reference from its route id by convention. */
@@ -109,7 +110,7 @@ interface RotationState {
    * walked past within the current window (0 = start from head).
    */
   nextIndex: number
-  /** Epoch-ms of the last spare-key write, or `undefined` before any rotation. */
+  /** Epoch-ms of the last key write, or `undefined` before any rotation. */
   lastWriteAt: number | undefined
   /** Stable id for the current incident chain; refreshed on a fresh window. */
   rotationId: RotationId
@@ -117,7 +118,7 @@ interface RotationState {
   chain: Promise<RequestErrorAction | undefined>
 }
 
-/** Cached spare-key values for one provider, indexed by position in `apiKeyEnvChain`. */
+/** Cached key values for one provider, indexed by position in `apiKeyEnvChain`. */
 const chainCaches = new Map<string, Array<string | undefined>>()
 
 /** The `agent/request-error` payload fields this plugin reads. */
@@ -149,7 +150,7 @@ export function apply(ctx: Context, config: Config): void {
     return hit?.value
   }
 
-  /** Refresh the cached spare-key values for one provider from its `apiKeyEnvChain` refs. */
+  /** Refresh the cached key values for one provider from its `apiKeyEnvChain` refs. */
   const refreshChain = async (provider: string, profile: RotationProfile): Promise<void> => {
     const values: Array<string | undefined> = []
     for (const ref of profile.apiKeyEnvChain) {
@@ -179,7 +180,7 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   // Refresh a changed chain cache when any of a provider's chain refs changes,
-  // so a newly-stored spare key is picked up without a restart.
+  // so a newly-stored key is picked up without a restart.
   ctx.on('credentials/updated', (ref: CredentialRef) => {
     const refStr = String(ref)
     for (const [provider, profile] of Object.entries(profiles())) {
@@ -187,7 +188,7 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 
-  /** The ordered, non-empty spare-key list for a provider. */
+  /** The ordered, non-empty key list for a provider. */
   const usableChain = (provider: string): string[] =>
     (chainCaches.get(provider) ?? []).filter((value): value is string => value !== undefined && value.length > 0)
 

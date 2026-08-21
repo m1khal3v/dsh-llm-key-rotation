@@ -2,7 +2,7 @@
 
 export const en = {
   nav: 'Key Rotation',
-  description: 'Configure a spare-key chain per provider. When a provider hits a subscription limit, the plugin rotates through these spare keys.',
+  description: 'List every API key a provider can use. When a provider hits a subscription or rate limit, the plugin rotates through these keys automatically.',
   noProviders: 'No providers configured yet. Add a provider in the main settings first.',
   triggers: 'Rotate On',
   triggerQuota: 'Quota exceeded',
@@ -12,11 +12,12 @@ export const en = {
   keyPlaceholder: 'Paste API key value…',
   save: 'Save',
   remove: 'Remove',
+  rotating: 'Key rotation enabled',
 }
 
 export const zh = {
   nav: '密钥轮转',
-  description: '为每个提供商配置备用密钥链。当提供商达到订阅上限时，插件会轮转到这些备用密钥。',
+  description: '列出提供商可用的所有 API 密钥。当提供商达到订阅或速率限制时，插件会自动在这些密钥之间轮转。',
   noProviders: '尚未配置任何提供商。请先在主设置中添加提供商。',
   triggers: '轮转触发',
   triggerQuota: '配额已用尽',
@@ -26,6 +27,7 @@ export const zh = {
   keyPlaceholder: '粘贴 API 密钥值…',
   save: '保存',
   remove: '移除',
+  rotating: '密钥轮转已启用',
 }
 
 export type KeyRotationKey = keyof typeof en

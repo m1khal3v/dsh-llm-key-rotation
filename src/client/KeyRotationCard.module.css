@@ -6,14 +6,50 @@
 .card {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 20px;
   border-radius: 12px;
   background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l2);
+  transition: border-color .16s, background .16s;
 }
 
+.card:hover {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+/* An open card reads as the one being worked on, not merely taller. */
+.cardOpen {
+  background: var(--dsw-alias-bg-layer-3);
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+/* The name/description row doubles as the collapse toggle, like the standard
+   plugin cards (Shell, Agent Loop, Web Search). */
 .header {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 12px;
+}
+
+.header:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+
+/* Name over description: the description tells the card apart from its peers,
+   so it gets its own line rather than trailing the name. */
+.headText {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -33,6 +69,25 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+.chevron {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  transition: transform .16s;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  margin: 0 16px;
+  padding: 16px 0 20px;
+}
+
 .providers {
   display: flex;
   flex-direction: column;
@@ -43,13 +98,33 @@
   border-radius: 8px;
   border: 1px solid var(--dsw-alias-border-l2);
   overflow: hidden;
+  transition: border-color .16s;
 }
 
+/* An expanded provider reads as the one being worked on. */
+.providerOpen {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+/* The whole header row is the provider's disclosure target. The on/off switch
+   lives inside and stops propagation, so it only toggles enabled. */
 .providerHeader {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.providerHeader:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.providerHeader:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+  border-radius: 6px;
 }
 
 .providerName {

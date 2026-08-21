@@ -52,7 +52,7 @@ export interface RotationProfile {
   /** Failure codes that trigger a rotation (e.g. `QUOTA`, `RATE_LIMIT`, `AUTH`). */
   rotate_on: string[]
   /**
-   * Credential references holding the spare keys, one value per reference
+   * Credential references holding the keys, one value per reference
    * (e.g. `OPENCODE_GO_API_KEY_CHAIN_1`, `_CHAIN_2`, …). Values live in the
    * credential store; the web card writes them.
    */
