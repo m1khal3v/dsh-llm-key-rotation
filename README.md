@@ -2,7 +2,6 @@
   <a href="https://www.npmjs.com/package/@m1khal3v/dsh-llm-key-rotation"><img alt="npm" src="https://img.shields.io/npm/v/@m1khal3v/dsh-llm-key-rotation?style=flat-square&color=4b6fff"></a>
   <img alt="DeepSeek Harness" src="https://img.shields.io/badge/deepseek--harness-v0.1.1--rc.1-263146?style=flat-square">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-263146?style=flat-square"></a>
-  <img alt="Status" src="https://img.shields.io/badge/status-beta-7da1de?style=flat-square">
 </p>
 
 <h1 align="center">dsh-llm-key-rotation</h1>
