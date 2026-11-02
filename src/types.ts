@@ -50,11 +50,11 @@ export interface RotationProfile {
   /** Whether rotation is active for this provider. */
   enabled: boolean
   /** Failure codes that trigger a rotation (e.g. `QUOTA`, `RATE_LIMIT`, `AUTH`). */
-  rotate_on: string[]
+  rotate_on: readonly string[]
   /**
    * Credential references holding the keys, one value per reference
    * (e.g. `OPENCODE_GO_API_KEY_CHAIN_1`, `_CHAIN_2`, …). Values live in the
    * credential store; the web card writes them.
    */
-  apiKeyEnvChain: string[]
+  apiKeyEnvChain: readonly string[]
 }

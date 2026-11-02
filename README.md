@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@m1khal3v/dsh-llm-key-rotation"><img alt="npm" src="https://img.shields.io/npm/v/@m1khal3v/dsh-llm-key-rotation?style=flat-square&color=4b6fff"></a>
-  <img alt="DeepSeek Harness" src="https://img.shields.io/badge/deepseek--harness-v0.1.1--rc.1-263146?style=flat-square">
+  <img alt="DeepSeek Harness" src="https://img.shields.io/badge/deepseek--harness-v0.2.1--rc.5-263146?style=flat-square">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-263146?style=flat-square"></a>
 </p>
 
@@ -18,7 +18,7 @@
 ## ⚡️ Highlights
 
 - 🔄 **Invisible to Agent & User**: Request fails with quota/rate limit → plugin hot-swaps the key → request retries and succeeds seamlessly.
-- 🎛 **Native Web UI**: List every key a provider can use and toggle rotation right inside Settings.
+- 🎛 **Native Web & Desktop UI**: List every key a provider can use and toggle rotation right inside Settings → Plugins.
 - 🧠 **Smart Anti-Spin**: Cooldown discipline prevents infinite loops if all your keys are exhausted.
 - 🧼 **Zero Core Patches**: Plugs cleanly into the Harness recovery waterfall — safe to install, safe to remove.
 
@@ -46,19 +46,27 @@
 
 ### 1. Install the plugin
 
+**Desktop app** — open the **Plugins** page and install `@m1khal3v/dsh-llm-key-rotation`. The desktop client is a web client, so the same browser-half card renders there.
+
+**CLI / local install** — add the plugin to your web profile:
+
 ```sh
 dsh plugin --profile web add @m1khal3v/dsh-llm-key-rotation
 ```
 
-### 2. Configure via Web UI
+### 2. Configure via the Plugins UI
 
-Navigate to **Settings** → **Plugins** → **Key Rotation**:
+Navigate to **Settings** → **Plugins** → **Key Rotation** tab:
 
 1. **Toggle on** rotation for your target provider.
 2. Select your trigger codes (default: `QUOTA`, `AUTH`).
 3. Click **Add key**, paste all the keys you want that provider to rotate through, and hit **Save**.
 
 *(Keys are safely saved to the Harness credential store)*.
+
+### 3. Desktop
+
+Install through the desktop **Plugins** page, then open **Settings** → **Plugins** → **Key Rotation**. Keys are stored in the desktop profile's credential store. Rotation runs host-side on the same credential seam as the web build, so a rotated key reaches the next request without restarting the app or the session.
 
 ---
 

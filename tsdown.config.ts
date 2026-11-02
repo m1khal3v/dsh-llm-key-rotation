@@ -6,7 +6,7 @@ import { resolve as resolvePath, dirname } from 'node:path'
 // Standalone build for @m1khal3v/dsh-llm-key-rotation.
 //
 // Two build artifacts:
-//   1. Node-half: lib/index.js + lib/invariant.js (ESM, platform: node)
+//   1. Node-half: lib/index.js (ESM, platform: node)
 //   2. Browser-half: lib/client.js (CJS, platform: browser, wrapped in
 //      window.__ModuleLoader__.load(...) for the dsh module system)
 //
@@ -22,13 +22,11 @@ import { resolve as resolvePath, dirname } from 'node:path'
 const PLATFORM_EXTERNALS = [
   /^react($|\/)/,
   /^@deepseek-ai\/cordis($|\/)/,
-  /^@deepseek-ai\/dsh-client-runtime($|\/)/,
+  /^@deepseek-ai\/dsh-client-store($|\/)/,
   /^@deepseek-ai\/dsh-client-ui-slots($|\/)/,
   /^@deepseek-ai\/dsh-client-ui-primitives($|\/)/,
-  /^@deepseek-ai\/dsh-client-connection($|\/)/,
   /^@deepseek-ai\/dsh-client-locale($|\/)/,
   /^@deepseek-ai\/dsh-client-ui-settings($|\/)/,
-  /^@deepseek-ai\/dsh-client-ui-settings-plugins($|\/)/,
   /^@deepseek-ai\/dsh-api-remotes($|\/)/,
 ]
 
@@ -83,9 +81,9 @@ const cssModulesPlugin = {
 }
 
 export default defineConfig([
-  // ── Node-half: server plugin + invariant companion ──────────────────
+  // ── Node-half: server plugin ─────────────────────────────────────────
   {
-    entry: ['src/index.ts', 'src/invariant.ts'],
+    entry: ['src/index.ts'],
     format: 'esm',
     outDir: 'lib',
     clean: true,

@@ -17,8 +17,8 @@
  * reference (`envRefOf(provider)`, e.g. `OPENCODE_GO_API_KEY`). Every other key
  * the provider may use lives one per reference listed in `apiKeyEnvChain` (e.g.
  * `OPENCODE_GO_API_KEY_CHAIN_1`, `OPENCODE_GO_API_KEY_CHAIN_2`, …), with values
- * stored through the credential store (the web card writes them there) and read
- * at rotation time.
+ * stored through the credential store (the web/desktop Plugins card writes them
+ * there) and read at rotation time.
  *
  * Walk discipline (no unbounded spinning), keyed to the last write timestamp:
  *   - The latest key write carries a timestamp. A failing request that
@@ -52,13 +52,13 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { LlmFailure } from '@deepseek-ai/dsh-llm'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { RotationId } from './brand.ts'
 import type { KeyRotationEvent, RotationProfile } from './types.ts'
 
@@ -68,7 +68,8 @@ export { RotationId } from './brand.ts'
 export const name = 'llm-key-rotation'
 export const inject = ['agents', 'credentials']
 
-const NS = settingsNamespace('llm-key-rotation')
+/** Settings entry id owned by this plugin in the composition. */
+const NS = 'llm-key-rotation' as SettingsNamespace
 
 /**
  * Default rotating codes when a profile omits `rotate_on`. Only codes that
@@ -87,21 +88,29 @@ export function envRefOf(provider: string): string {
   return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
 }
 
-const profileSchema: z<RotationProfile> = z.object({
+// Schema values are mutable arrays; the public type exposes them read-only
+// because a resolved config snapshot is never mutated by this plugin.
+const profileSchema = z.object({
   enabled: z.boolean().default(false),
   rotate_on: z.array(z.string().min(1)).min(1).default([...DEFAULT_ROTATE_ON]),
   apiKeyEnvChain: z.array(z.string().role('credential-ref')).default([]),
-})
+}) as unknown as z<RotationProfile>
 
-/** Plugin config, also the `llm-key-rotation` settings-section shape. */
+/**
+ * Plugin config, also the `llm-key-rotation` settings-section shape. The
+ * `providers` field is volatile so the settings form can replace it live
+ * without restarting the plugin; read it through `config.providers.get()`.
+ */
 export interface Config {
   /** Rotation profiles keyed by provider route id (e.g. `opencode-go`). */
-  readonly providers: Readonly<Record<string, RotationProfile>>
+  readonly providers: Volatile<Readonly<Record<string, RotationProfile>>>
 }
 
-export const Config: z<Config> = z.object({
-  providers: z.dict(profileSchema).default({}),
-})
+// Schemastery's schema types model the field value, while `volatile()` keeps a
+// live reference at runtime; the exported `Config` type is the resolved shape.
+export const Config = z.object({
+  providers: z.dict(profileSchema).default({}).volatile(),
+}) as unknown as z<Config>
 
 /** Per-provider in-memory rotation state. */
 interface RotationState {
@@ -141,8 +150,14 @@ interface RequestErrorPayload {
  * @param config - composition entry config; the `llm-key-rotation:` settings section overrides it live.
  */
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
-  const profiles = (): Readonly<Record<string, RotationProfile>> => current().providers
+  const profiles = (): Readonly<Record<string, RotationProfile>> => config.providers.get()
+
+  // Opt out of an auto-generated settings page. The browser half renders its
+  // own card in Settings → Plugins → Key Rotation. Injection is optional: a
+  // host without the settings service still mounts rotation normally.
+  ctx.inject(['settings'], (child) => {
+    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
+  })
 
   /** Resolve one credential reference to its stored value, or `undefined` when unset. */
   const resolveRef = async (ref: CredentialRef): Promise<string | undefined> => {
@@ -186,6 +201,12 @@ export function apply(ctx: Context, config: Config): void {
     for (const [provider, profile] of Object.entries(profiles())) {
       if (profile.apiKeyEnvChain.includes(refStr)) void refreshChain(provider, profile)
     }
+  })
+
+  // A live form write replaces the volatile `providers` snapshot without a
+  // plugin restart; rebuild the chain caches from the new profile refs.
+  ctx.on('settings/document-updated', (ns) => {
+    if (ns === NS) void refreshAllChains()
   })
 
   /** The ordered, non-empty key list for a provider. */
@@ -298,13 +319,4 @@ export function apply(ctx: Context, config: Config): void {
     lifetime.abort(new Error('llm-key-rotation plugin disposed'))
     await Promise.allSettled([...states.values()].map(state => state.chain))
   }, 'llm-key-rotation: abort and drain active rotations')
-
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: () => {
-      void refreshAllChains()
-    },
-  })
 }

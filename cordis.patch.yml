@@ -17,8 +17,9 @@
 #     RATE_LIMIT from the provider profile's retryPolicy.retryableCodes.
 #
 # Configure provider rotation profiles through the `llm-key-rotation:` settings
-# section (written by the web Plugins card or settings.yaml); the composition
-# `providers` map below starts empty and is overridden per deployment.
+# section (written by the web/desktop Settings → Plugins → Key Rotation tab, or
+# settings.yaml); the composition `providers` map below starts empty and is
+# overridden per deployment.
 - insert:
     - id: llm-key-rotation
       name: '@m1khal3v/dsh-llm-key-rotation'

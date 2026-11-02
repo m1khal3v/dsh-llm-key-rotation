@@ -10,14 +10,18 @@
  * itself is written by the server into the provider's env reference
  * (`OPENCODE_GO_API_KEY`) and is not touched here.
  *
- * Only providers marked `active` by the harness (added in the main settings) are
- * shown. State is re-read every time the controller (re)loads, so reopening the
- * settings window refreshes the current configuration.
+ * Only providers currently registered with the harness (reported by
+ * `llm.listProviders`) are shown. State is re-read every time the controller
+ * (re)loads, so reopening the settings window refreshes the current
+ * configuration.
  */
 
-import type { SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import type { IApiClient, CredentialView, ConfigurableProviderView } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type {
+  ClientRemote, CredentialInfo, LlmConfigurableProvider, LlmProviderInfo, RemoteResult,
+} from '@deepseek-ai/dsh-api-remotes/client'
 
 /** Derive the provider's env (apiKeyEnv) reference from its route id by convention. */
 export function envRefOf(provider: string): string {
@@ -99,8 +103,8 @@ interface SavedProfile {
 }
 
 /**
- * Bridges the configurable-provider directory and the `llm-key-rotation`
- * settings namespace onto a card for managing a provider's key chain.
+ * Bridges the registered-provider directory and the `llm-key-rotation` config
+ * form onto a card for managing a provider's key chain.
  */
 export class KeyRotationCardController {
   private readonly store: SnapshotStore<KeyRotationCardState>
@@ -110,15 +114,15 @@ export class KeyRotationCardController {
   private loaded = false
 
   /**
-   * @param scope - the bound settings scope for the `llm-key-rotation` namespace.
-   * @param api - the wire API client.
+   * @param form - the config form for the `llm-key-rotation` namespace.
+   * @param remote - the typed wire remote client.
    */
   constructor(
-    private readonly scope: SettingsScope<Record<string, unknown>>,
-    private readonly api: IApiClient,
+    private readonly form: ConfigForm<Record<string, unknown>>,
+    private readonly remote: ClientRemote,
   ) {
     this.store = createSnapshotStore(this.initialState())
-    this.scope.subscribe(() => { void this.loadProviders() })
+    this.form.subscribe(() => { void this.loadProviders() })
     void this.loadProviders()
   }
 
@@ -126,17 +130,23 @@ export class KeyRotationCardController {
     return { available: false, providers: [], saving: false, failed: false, error: null }
   }
 
-  /** Load the active providers and their saved rotation configuration. */
+  /** Load the registered providers and their saved rotation configuration. */
   private async loadProviders(): Promise<void> {
     try {
-      const response = await this.api.llm.providers({})
-      if (!response.result.ok) throw new Error(response.result.error.message)
-      const snapshot = this.scope.getSnapshot()
+      const [registeredResponse, declaredResponse] = await Promise.all([
+        this.remote.llm.listProviders(),
+        this.remote.llm.listConfigurableProviders(),
+      ])
+      if (!registeredResponse.ok) throw new Error(registeredResponse.error.message)
+      if (!declaredResponse.ok) throw new Error(declaredResponse.error.message)
+      const snapshot = this.form.getSnapshot()
       const saved = this.readProfiles(snapshot.value)
-      const active = response.result.value.providers.filter((entry) => entry.active)
+      const declared = new Map<string, LlmConfigurableProvider>(
+        declaredResponse.value.map((entry: LlmConfigurableProvider) => [entry.provider, entry]),
+      )
       this.rows.clear()
-      for (const entry of active) {
-        this.rows.set(entry.provider, this.buildRow(entry, saved.get(entry.provider)))
+      for (const entry of registeredResponse.value) {
+        this.rows.set(entry.id, this.buildRow(entry, declared.get(entry.id), saved.get(entry.id)))
       }
       await this.refreshCredentialState()
       this.loaded = true
@@ -171,15 +181,21 @@ export class KeyRotationCardController {
     return out
   }
 
-  /** Build a provider row from its directory entry and any saved profile. */
-  private buildRow(entry: ConfigurableProviderView, saved: SavedProfile | undefined): RotationProviderRow {
+  /** Build a provider row from its registered entry, declared directory, and saved profile. */
+  private buildRow(
+    entry: LlmProviderInfo,
+    declared: LlmConfigurableProvider | undefined,
+    saved: SavedProfile | undefined,
+  ): RotationProviderRow {
     const chain: ChainEntry[] = (saved?.apiKeyEnvChain ?? []).map((ref) => {
       const match = /_CHAIN_(\d+)$/.exec(ref)
       const n = match === null ? 0 : Number(match[1])
       return { id: newKeyId(), n, ref, value: '', saved: true }
     })
     return {
-      provider: entry.provider, displayName: entry.displayName, envRef: envRefOf(entry.provider),
+      provider: entry.id,
+      displayName: declared?.displayName ?? entry.name,
+      envRef: envRefOf(entry.id),
       enabled: saved?.enabled ?? false,
       rotateOn: saved?.rotateOn ?? [...DEFAULT_ROTATE_ON],
       chain,
@@ -192,9 +208,9 @@ export class KeyRotationCardController {
     for (const row of this.rows.values()) for (const key of row.chain) refs.add(key.ref)
     if (refs.size === 0) { this.loaded = true; return }
     try {
-      const response = await this.api.credentials.describe({ refs: [...refs] })
-      if (response.result.ok) {
-        const views = response.result.value.credentials as Record<string, CredentialView>
+      const response = await this.remote.credentials.describe([...refs])
+      if (response.ok) {
+        const views: Record<string, CredentialInfo> = response.value
         for (const row of this.rows.values()) {
           for (const key of row.chain) key.saved = views[key.ref]?.configured ?? false
         }
@@ -221,7 +237,7 @@ export class KeyRotationCardController {
 
   /** Persist one provider's profile (enabled, rotateOn, apiKeyEnvChain) to the settings section. */
   private async commitProvider(provider: string): Promise<void> {
-    const snapshot = this.scope.getSnapshot()
+    const snapshot = this.form.getSnapshot()
     const providers = { ...(snapshot.value?.['providers'] as Record<string, unknown> | undefined ?? {}) }
     const row = this.rows.get(provider)
     if (row === undefined) return
@@ -233,7 +249,8 @@ export class KeyRotationCardController {
     this.failed = false
     this.publish()
     try {
-      await this.scope.set('providers', providers)
+      const accepted = await this.form.set('providers', providers)
+      if (!accepted) this.failed = true
     } catch {
       this.failed = true
     } finally {
@@ -275,7 +292,17 @@ export class KeyRotationCardController {
         const key = row.chain.find((k) => k.id === keyId)
         row.chain = row.chain.filter((k) => k.id !== keyId)
         this.publish()
-        if (key !== undefined) void this.api.credentials.unset({ ref: key.ref }).catch(() => {})
+        if (key !== undefined) {
+          void this.remote.credentials.unset(key.ref).then((response: RemoteResult<void>) => {
+            if (!response.ok) {
+              this.failed = true
+              this.publish()
+            }
+          }, () => {
+            this.failed = true
+            this.publish()
+          })
+        }
         void this.commitProvider(provider)
       },
       editKey: (provider, keyId, value) => {
@@ -300,9 +327,13 @@ export class KeyRotationCardController {
     try {
       for (const key of dirty) {
         try {
-          await this.api.credentials.set({ ref: key.ref, value: key.value.trim() })
-          key.saved = true
-          key.value = ''
+          const response = await this.remote.credentials.set(key.ref, key.value.trim())
+          if (response.ok) {
+            key.saved = true
+            key.value = ''
+          } else {
+            this.failed = true
+          }
         } catch {
           this.failed = true
         }

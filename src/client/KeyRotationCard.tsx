@@ -5,17 +5,16 @@
  * and never read back, so its input becomes disabled with a `[hidden]`
  * placeholder and can only be removed.
  *
- * The card mirrors the standard plugin cards (Shell, Agent Loop, Web Search): it
- * starts collapsed showing only its name and description and discloses its
- * controls in place when its header is clicked, collapsing again on a second
- * click. Each provider section collapses the same way — collapsed by default
- * even when rotation is enabled — and clicking its on/off switch never collapses
- * or expands it. Staged edits and provider state live in the controller, so
- * collapsing a section does not lose anything the user has not yet saved.
+ * The card is the whole Plugins tab page, so it starts expanded; its header can
+ * still collapse it. Each provider section discloses its controls in place and
+ * stays collapsed by default even when rotation is enabled — clicking its
+ * on/off switch never collapses or expands it. Staged edits and provider state
+ * live in the controller, so collapsing a section does not lose anything the
+ * user has not yet saved.
  */
 
 import { useState, type ReactNode } from 'react'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   KeyRotationCardFace, KeyRotationCardState, RotationProviderRow, ChainEntry,
@@ -25,7 +24,7 @@ import css from './KeyRotationCard.module.css'
 
 /** Props the renderer binds for the key-rotation card. */
 export type KeyRotationCardProps =
-  PropsRuntime<'settings.plugin.item'>
+  PropsRuntime<'settings.plugins.tab'>
   & PropsLocale<'settings.key-rotation'>
   & InjectFace<KeyRotationCardFace>
 
@@ -42,7 +41,9 @@ const ROTATE_ON: ReadonlyArray<{ code: string, labelKey: KeyRotationKey }> = [
 export function KeyRotationCard(props: KeyRotationCardProps): ReactNode {
   const { t, useKeyRotationCard, toggleEnabled, toggleRotateOn, addKey, removeKey, editKey, save } = props
   const state = useKeyRotationCard((s: KeyRotationCardState) => s)
-  const [open, setOpen] = useState(false)
+  // The card is the whole Plugins tab page, so it starts expanded; provider
+  // sections inside stay collapsed until opened.
+  const [open, setOpen] = useState(true)
 
   if (!state.available) return null
 
@@ -58,7 +59,7 @@ export function KeyRotationCard(props: KeyRotationCardProps): ReactNode {
           <span className={css.title}>{t('nav')}</span>
           <span className={css.description}>{t('description')}</span>
         </span>
-        <IconChevronDownOutline14
+        <IconChevronDownOutlineRegular
           className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
         />
       </button>
@@ -132,7 +133,7 @@ function ProviderSection(props: {
           <span className={css.switchSlider} />
         </label>
         <span className={css.providerName}>{row.displayName}</span>
-        <IconChevronDownOutline14
+        <IconChevronDownOutlineRegular
           className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
         />
       </div>

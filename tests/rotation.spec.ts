@@ -66,10 +66,23 @@ function quotaFailure(): LlmFailure {
   return Object.freeze({ message: 'Insufficient quota', code: 'QUOTA', status: 429 })
 }
 
+/**
+ * Raw (schema-valid) plugin config input. `ctx.plugin` validates it through the
+ * exported `Config` schema, which turns `providers` into the volatile ref the
+ * plugin reads.
+ */
+interface TestConfig {
+  providers: Record<string, {
+    enabled: boolean
+    rotate_on: string[]
+    apiKeyEnvChain: string[]
+  }>
+}
+
 /** Build a test harness with real session/agent services and a mock credential store. */
 async function harness(
   initial: Record<string, string>,
-  config: keyRotation.Config,
+  config: TestConfig,
 ): Promise<{ ctx: Context; credentials: MockCredentialProvider; logs: Array<unknown[]> }> {
   const ctx = new Context()
   const logs: Array<unknown[]> = []
@@ -104,7 +117,7 @@ function dispatchError(
   )
 }
 
-const CHAIN_CONFIG = (): keyRotation.Config => ({
+const CHAIN_CONFIG = (): TestConfig => ({
   providers: {
     test: {
       enabled: true,

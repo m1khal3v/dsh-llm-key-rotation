@@ -1,17 +1,17 @@
 /**
- * Key-rotation settings card, browser half. Registers a card in the Plugins
- * settings page under the `settings.plugin.item` keyed slot, keyed to the
- * `llm-key-rotation` namespace. The card reads the configurable-provider
- * directory and manages each provider's key chain (its `_CHAIN_N` refs).
+ * Key-rotation settings page, browser half. Registers a tab in the Plugins
+ * settings page (`settings.plugins.tab`) keyed to the `llm-key-rotation`
+ * namespace. The card reads the registered-provider directory and manages each
+ * provider's key chain (its `_CHAIN_N` refs).
  * @module @m1khal3v/dsh-llm-key-rotation/client
  */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
-import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { KeyRotationCard } from './KeyRotationCard.tsx'
 import { KeyRotationCardController } from './key-rotation-card-controller.ts'
 import { en, zh, type KeyRotationKey } from './locales.ts'
@@ -28,25 +28,36 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
+export const inject = [
+  'slots',
+  'locale',
+  'remote',
+  'remote.credentials',
+  'remote.llm',
+  'remote.settings',
+  'configForms',
+]
 
 /**
- * Mount the key-rotation card in the Plugins settings page.
+ * Mount the key-rotation card as a Plugins settings tab.
  * @param ctx - client root context.
  */
-export function apply(ctx: ClientContext): void {
-  const { api } = ctx.get('connection') as ConnectionHandle
+export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'ui-key-rotation: dictionaries')
 
-  const controller = new KeyRotationCardController(
-    ctx.settingsScope.bind({ namespace: NS }),
-    api,
-  )
+  const t = ctx.locale.bind(LOCALE_NS)
+  const form: ConfigForm<Record<string, unknown>> = ctx.configForms.get<Record<string, unknown>>(NS)
+  const controller = new KeyRotationCardController(form, ctx.remote)
 
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: NS,
-    locale: LOCALE_NS,
-    inject: () => controller.inject(),
-  }, KeyRotationCard))
+  ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject(
+    'settings.plugins.tab',
+    () => ctx.slots.register({
+      name: 'settings.plugins.tab',
+      id: NS,
+      order: 100,
+      label: () => t('nav'),
+      locale: LOCALE_NS,
+      inject: () => controller.inject(),
+    }, KeyRotationCard),
+  )), 'ui-key-rotation: settings page')
 }
